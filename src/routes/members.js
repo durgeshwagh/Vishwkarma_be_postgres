@@ -1,6 +1,8 @@
 const express = require('express');
 const Member = require('../models/Member');
 const Marriage = require('../models/Marriage');
+const User = require('../models/User'); // Added for Auto-User Creation
+const bcrypt = require('bcryptjs');     // Added for Password Hashing
 const { verifyToken, checkPermission } = require('../middleware/authMiddleware');
 const multer = require('multer');
 const path = require('path');
@@ -34,7 +36,10 @@ const router = express.Router();
  *           enum: [Male, Female]
  *         maritalStatus:
  *           type: string
- *           enum: [Single, Married]
+ *           enum: [Single, Married, Divorced, Widowed]
+ *         maidenName:
+ *           type: string
+ *           description: The maiden name of the member (for married women)
  *         memberId:
  *           type: string
  *           description: Custom generated member ID (e.g. M123456)
@@ -107,253 +112,102 @@ const uploadMiddleware = (fields) => (req, res, next) => {
  *                 $ref: '#/components/schemas/Member'
  */
 // Get All Members (Search/Filter support & Pagination)
-// Get All Members (Search/Filter support & Pagination)
 router.get('/', verifyToken, checkPermission('member.view'), async (req, res) => {
     try {
-        const { search, familyId, isPrimary } = req.query;
+        const { paginate } = require('../utils/pagination');
+        const { search, familyId, isPrimary, showDeceased, gender, maritalStatus, name, location, contact, state, district, city, village } = req.query;
+        
         const page = parseInt(req.query.page) || 1;
-        // If limit is explicitly '0', use 0 (no limit). Otherwise default to 20.
         const limitParam = req.query.limit;
         const limit = limitParam === '0' ? 0 : (parseInt(limitParam) || 20);
 
-        // If limit is 0, skip is 0.
-        const skip = limit === 0 ? 0 : (page - 1) * limit;
-
         let query = {};
         
-        // Default: Only show Alive members unless explicitly asked otherwise
-        if (!req.query.showDeceased || req.query.showDeceased.toString().toLowerCase() !== 'true') {
-            query['personal_info.life_status'] = { $ne: 'Deceased' };
+        // 1. Life Status Filter
+        if (!showDeceased || showDeceased.toString().toLowerCase() !== 'true') {
+            query.lifeStatus = { $ne: 'Deceased' };
         }
 
-        // Filter by Primary Status if requested
-        let isPrimaryBool = false;
-        if (isPrimary && isPrimary.toString().toLowerCase().trim() === 'true') {
-            query.isPrimary = true;
-            isPrimaryBool = true;
-            console.log('[DEBUG] Filtering by Primary Member Status');
-        }
-
-        // Filter by Matrimony Privacy Flag
-        const { showOnMatrimony, gender, maritalStatus } = req.query;
-        if (showOnMatrimony && showOnMatrimony.toString().toLowerCase().trim() === 'true') {
-            // Target the correct nested path in MongoDB
-            query['personal_info.showOnMatrimony'] = true;
-            console.log('[DEBUG] Filtering for Matrimony Portal (Visible Only)');
-        }
-
-        // Gender Filter (Exact Match)
-        if (gender) {
-            query.gender = gender.trim(); 
-        }
-
-        // Marital Status Filter (Exact Match)
-        if (maritalStatus) {
-            query.maritalStatus = maritalStatus.trim();
-        }
-
-        // ROLE-BASED ACCESS CONTROL
-        const userRole = req.user.role; // 'Member', 'Admin', 'SuperAdmin'
-
-        if (userRole === 'Admin' || userRole === 'SuperAdmin') {
-            // ADMIN: Can see everyone, or filter by specific family if requested
-            if (familyId) {
-                query.familyId = familyId;
-            }
-        } else {
-            // MEMBER: 
-            // If fetching Primary Members (Directory), allow seeing all Primary Members
-            if (isPrimaryBool) {
-                // No restriction on familyId, they can see all heads
-                // But we might want to respect search/pagination below
-            } else {
-                // RESTRICTED: Can ONLY see their own family
-                // Fetch the logged-in user's full member profile to determine their family
-                /* 
-                let myMemberProfile = null;
-                if (req.user.memberId) {
-                    myMemberProfile = await Member.findOne({ memberId: req.user.memberId });
-                }
-
-                if (myMemberProfile && myMemberProfile.familyId) {
-                    query.familyId = myMemberProfile.familyId;
-                } else {
-                    if (req.user.memberId) {
-                        query.memberId = req.user.memberId; // Only see themselves
-                    } else {
-                        // Return empty paginated structure
-                        return res.json({ data: [], total: 0, page, pages: 0 });
-                    }
-                }
-                */
-                // TEMPORARY: Allow all members to see the list until RBAC is fully defined
-            }
-        }
+        // 2. Explicit Filters
+        if (isPrimary && isPrimary.toString().toLowerCase().trim() === 'true') query.isPrimary = true;
+        if (req.query.showOnMatrimony === 'true') query.showOnMatrimony = true;
+        if (gender) query.gender = gender.trim();
+        if (maritalStatus) query.maritalStatus = maritalStatus.trim();
+        if (familyId) query.familyId = familyId;
+        if (req.query.fatherId) query.father = req.query.fatherId;
+        if (req.query.motherId) query.mother = req.query.motherId;
 
         const andConditions = [];
 
-        // Helper to escape regex special characters
-        function escapeRegex(text) {
-            return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
-        }
-
-        if (search) {
-            const safeSearch = escapeRegex(search.trim());
-            
-            // 1. Regex Search (Partial matches)
-            const searchRegex = new RegExp(safeSearch, 'i');
-
-            // Optimization: If search term looks like a Member ID (M1234), prioritize ID search
-            if (/^M\d+$/i.test(search.trim())) {
-                 andConditions.push({ memberId: searchRegex });
+        // 3. Search Query (Optimized with $text)
+        if (search && search.trim()) {
+            const trimmedSearch = search.trim();
+            // If it looks like a Member ID, use exact match/regex on memberId field
+            if (/^M\d+$/i.test(trimmedSearch)) {
+                andConditions.push({ memberId: new RegExp(trimmedSearch, 'i') });
             } else {
-                 andConditions.push({
-                    $or: [
-                        { fullName: searchRegex }, 
-                        { firstName: searchRegex },
-                        { lastName: searchRegex },
-                        { city: searchRegex },
-                        { village: searchRegex },
-                        { phone: searchRegex }
-                    ]
-                 });
+                // Use Text Search for improved performance and Marathi support
+                andConditions.push({ $text: { $search: trimmedSearch } });
             }
         }
 
-        // Advanced Filters (AND logic)
-        const { name, state, district, city, village } = req.query; 
-        // Single Input Name Filter (Matches First OR Middle OR Last OR Full Name)
+        // 4. Advanced Property Filters (Name, Location, Contact)
+        function escapeRegex(text) { return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&'); }
+
         if (name) {
-            const safeName = escapeRegex(name.trim());
-            const fullNamePattern = safeName.replace(/\s+/g, '\\s*');
-            const fullNameRegex = new RegExp(fullNamePattern, 'i');
-            const nameRegex = new RegExp(safeName, 'i');
-
-            andConditions.push({
-                $or: [
-                    { fullName: fullNameRegex },
-                    { firstName: nameRegex },
-                    { lastName: nameRegex }
-                ]
-            });
+            const nameRegex = new RegExp(escapeRegex(name.trim()), 'i');
+            andConditions.push({ $or: [{ firstName: nameRegex }, { lastName: nameRegex }, { fullName: nameRegex }] });
         }
 
-        // Single Input Location Filter (Matches State OR District OR City OR Village)
-        const { location } = req.query;
         if (location) {
-            const safeLoc = escapeRegex(location.trim());
-            const locRegex = new RegExp(safeLoc, 'i');
-            andConditions.push({
-                $or: [
-                    { city: locRegex },
-                    { village: locRegex },
-                    { district: locRegex },
-                    { state: locRegex }
-                ]
-            });
+            const locRegex = new RegExp(escapeRegex(location.trim()), 'i');
+            andConditions.push({ $or: [{ city: locRegex }, { village: locRegex }, { district: locRegex }, { state: locRegex }] });
         }
 
-        // Contact Filter (Matches Phone)
-        const { contact } = req.query;
-        if (contact) {
-            const contactRegex = new RegExp(escapeRegex(contact.trim()), 'i');
-            andConditions.push({ phone: contactRegex });
-        }
+        if (contact) andConditions.push({ 'contact.mobile': new RegExp(escapeRegex(contact.trim()), 'i') });
 
+        // Location granular filters
+        if (state) andConditions.push({ $or: [{ state: new RegExp(escapeRegex(state.trim()), 'i') }, { 'geography.state': new RegExp(escapeRegex(state.trim()), 'i') }] });
+        if (district) andConditions.push({ $or: [{ district: new RegExp(escapeRegex(district.trim()), 'i') }, { 'geography.district': new RegExp(escapeRegex(district.trim()), 'i') }] });
+        if (city) andConditions.push({ $or: [{ city: new RegExp(escapeRegex(city.trim()), 'i') }, { taluka: new RegExp(escapeRegex(city.trim()), 'i') }, { 'geography.taluka': new RegExp(escapeRegex(city.trim()), 'i') }] });
+        if (village) andConditions.push({ $or: [{ village: new RegExp(escapeRegex(village.trim()), 'i') }, { 'geography.village': new RegExp(escapeRegex(village.trim()), 'i') }] });
 
-        if (state) {
-            const safeState = escapeRegex(state.trim());
-            const stateRegex = new RegExp(safeState, 'i');
-            andConditions.push({
-                $or: [
-                    { state: stateRegex },
-                    { stateName: stateRegex },
-                    { 'geography.state': stateRegex }
-                ]
-            });
-        }
-        if (district) {
-            const safeDistrict = escapeRegex(district.trim());
-            const districtRegex = new RegExp(safeDistrict, 'i');
-            andConditions.push({
-                $or: [
-                    { district: districtRegex },
-                    { districtName: districtRegex },
-                    { 'geography.district': districtRegex }
-                ]
-            });
-        }
-        if (city) {
-            const safeCity = escapeRegex(city.trim());
-            const cityRegex = new RegExp(safeCity, 'i');
-            andConditions.push({
-                $or: [
-                    { city: cityRegex },
-                    { taluka: cityRegex },
-                    { talukaName: cityRegex },
-                    { 'geography.taluka': cityRegex }
-                ]
-            });
-        }
-        if (village) {
-            const safeVillage = escapeRegex(village.trim());
-            const villageRegex = new RegExp(safeVillage, 'i');
-            andConditions.push({
-                $or: [
-                    { village: villageRegex },
-                    { villageName: villageRegex },
-                    { 'geography.village': villageRegex }
-                ]
-            });
-        }
-        if (req.query.fatherId) query.fatherId = req.query.fatherId;
-        if (req.query.motherId) query.motherId = req.query.motherId;
-
-        // Apply AND conditions if any
-        if (andConditions.length > 0) {
-            query.$and = andConditions;
-        }
+        if (andConditions.length > 0) query.$and = andConditions;
 
         // Sorting
         const { sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
-        const sortOptions = {};
-        sortOptions[sortBy] = sortOrder === 'asc' ? 1 : -1;
+        const sort = { [sortBy]: sortOrder === 'asc' ? 1 : -1 };
 
-        // Ensure 'createdAt' is indexed for this sort to be fast.
+        // Execute Pagination
+        // Note: If limit is 0, we bypass the min/max in paginate utility if it causes issues, but utility maxes at 100.
+        // For 'load all' (limit=0), we handle it separately here to avoid restricting to 100.
+        let result;
+        if (limit === 0) {
+            const data = await Member.find(query).sort(sort).lean();
+            result = { data, pagination: { total: data.length, page: 1, limit: 0, pages: 1 } };
+        } else {
+            result = await paginate(Member, query, { page, limit, sort, lean: true });
+        }
 
-        console.log('--- GET /members Debug ---');
-        console.log('User:', req.user.username); // Log simplified user
-        console.log('Query Params:', req.query);
-        console.log('AND Conditions:', JSON.stringify(andConditions, null, 2)); // Log AND conditions
-        console.log('Final Mongo Query:', JSON.stringify(query, null, 2));
-
-        // PERFORMANCE OPTIMIZATION: Execute count and find queries in parallel
-        const [total, members] = await Promise.all([
-            Member.countDocuments(query),
-            Member.find(query)
-                .sort(sortOptions)
-                .skip(skip)
-                .limit(limit)
-                .lean()
-        ]);
-
-        // Check registration status for each member
-        const memberIds = members.map(m => m.memberId);
-        const registeredUsers = await require('../models/User').find({ memberId: { $in: memberIds } }).select('memberId').lean();
+        // 5. Add Registration Status
+        const memberIds = result.data.map(m => m.memberId);
+        const User = require('../models/User');
+        const registeredUsers = await User.find({ memberId: { $in: memberIds } }).select('memberId').lean();
         const registeredMemberIds = new Set(registeredUsers.map(u => u.memberId));
 
-        const membersWithStatus = members.map(m => ({
+        const membersWithStatus = result.data.map(m => ({
             ...m,
             isRegistered: registeredMemberIds.has(m.memberId)
         }));
 
         res.json({
             data: membersWithStatus,
-            currentPage: page,
-            totalPages: Math.ceil(total / limit),
-            totalMembers: total
+            currentPage: result.pagination.page,
+            totalPages: result.pagination.pages,
+            totalMembers: result.pagination.total
         });
     } catch (err) {
+        console.error('[GET /members] Error:', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -414,12 +268,495 @@ router.get('/:id', verifyToken, checkPermission('member.view'), async (req, res)
     }
 });
 
-// Helper to generate IDs
-// Helper Functions (Global Scope)
+/**
+ * @swagger
+ * /api/members/{id}/edit-profile:
+ *   get:
+ *     summary: Get member and spouse data for edit form
+ *     description: Returns the opened member and their linked spouse in a predictable shape for form population
+ *     tags: [Members]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Member and spouse data
+ */
+router.get('/:id/edit-profile', verifyToken, checkPermission('member.view'), async (req, res) => {
+    try {
+        const idParam = req.params.id;
+        console.log(`[DEBUG] GET /members/:id/edit-profile called with id: ${idParam}`);
+
+        let member = idParam.startsWith('M')
+            ? await Member.findOne({ memberId: idParam })
+            : await Member.findById(idParam);
+
+        if (!member) {
+            return res.status(404).json({ message: 'Member not found' });
+        }
+
+        // Fetch spouse if linked (gender-agnostic - whoever is linked is the spouse)
+        let spouse = null;
+        if (member.spouse) {
+            spouse = await Member.findById(member.spouse);
+        }
+
+        console.log(`[DEBUG] edit-profile returning member: ${member.firstName}, spouse: ${spouse?.firstName || 'none'}`);
+        res.json({ member, spouse });
+    } catch (err) {
+        console.error(`[DEBUG] Error in GET /members/:id/edit-profile:`, err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --------------------------------------------------------------------------
+
+
+/**
+ * @swagger
+ * /api/members/{id}/profile-optimized:
+ *   get:
+ *     summary: Get optimized member profile with immediate family
+ *     tags: [Members]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Optimized profile data
+ */
+router.get('/:id/profile-optimized', verifyToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        let member;
+        
+        // 1. Find the Central Person
+        if (id.startsWith('M')) {
+            member = await Member.findOne({ memberId: id }).lean();
+        } else {
+            member = await Member.findById(id).lean();
+        }
+
+        if (!member) return res.status(404).json({ message: 'Member not found' });
+
+        // Projection for lightweight cards
+        const projection = {
+            firstName: 1, middleName: 1, lastName: 1, fullName: 1,
+            photoUrl: 1, gender: 1, dob: 1, memberId: 1, lifeStatus: 1,
+            education: 1, occupation: 1, occupationType: 1,
+            state: 1, district: 1, taluka: 1, village: 1, geography: 1,
+            contact: 1, maritalStatus: 1,
+            father: 1, mother: 1, spouse: 1 // Need these for identifying relations
+        };
+
+        // 2. Prepare Lookups
+        const family = {
+            spouse: null,
+            children: [],
+            father: null,
+            mother: null,
+            siblings: [],
+            grandchildren: []
+        };
+
+        // Parallel Batch 1: Direct Lookups (Spouse, Parents, Siblings, Children-by-Parent-Ref)
+        const batch1 = {};
+
+        // Spouse
+        if (member.spouse) {
+            batch1.spouse = Member.findById(member.spouse).select(projection).lean();
+        }
+
+        // Parents
+        if (member.father) {
+            batch1.father = Member.findById(member.father).select(projection).lean();
+        }
+        if (member.mother) {
+            batch1.mother = Member.findById(member.mother).select(projection).lean();
+        }
+
+        // Children (Robust Lookup: Find by Parent Reference instead of relying on array)
+        batch1.children = Member.find({
+            $or: [
+                { father: member._id },
+                { mother: member._id },
+                // Fallback for string-based IDs if used in legacy
+                { fatherMemberId: member.memberId },
+                { motherMemberId: member.memberId }
+            ]
+        }).select(projection).lean();
+
+        // Siblings
+        if (member.father || member.mother) {
+            const siblingQuery = {
+                _id: { $ne: member._id },
+                $or: []
+            };
+            if (member.father) siblingQuery.$or.push({ father: member.father });
+            if (member.mother) siblingQuery.$or.push({ mother: member.mother });
+            batch1.siblings = Member.find(siblingQuery).select(projection).lean();
+        }
+
+        // Execute Batch 1
+        const results1 = await Promise.all(Object.values(batch1));
+        const keys1 = Object.keys(batch1);
+        
+        keys1.forEach((key, index) => {
+            family[key] = results1[index];
+        });
+
+        // 3. Sequential Step: Grandchildren (Depend on Children IDs)
+        if (family.children && family.children.length > 0) {
+            const childIds = family.children.map(c => c._id);
+            family.grandchildren = await Member.find({
+                $or: [
+                    { father: { $in: childIds } },
+                    { mother: { $in: childIds } }
+                ]
+            }).select(projection).lean();
+        }
+
+        // 4. Structure Response
+        res.json({
+            member,
+            family
+        });
+
+    } catch (err) {
+        console.error('[ERROR] /members/:id/profile-optimized:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * @swagger
+ * /api/members/bulk-save:
+ *   put:
+ *     summary: Bulk update a family branch (Alias for POST)
+ *     tags: [Members]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.put('/bulk-save', verifyToken, checkPermission('member.update'), handleBulkSave);
+
+/**
+ * @swagger
+ * /api/members/bulk-save:
+ *   post:
+ *     summary: Bulk save/create a family branch
+ *     tags: [Members]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/bulk-save', verifyToken, checkPermission('member.create'), handleBulkSave);
+
+/**
+ * @swagger
+ * /api/members/bulk-delete:
+ *   post:
+ *     summary: Bulk delete members (SuperAdmin only)
+ *     tags: [Members]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/bulk-delete', verifyToken, async (req, res) => {
+    try {
+        // Strict Role Check - SuperAdmin Only
+        if (req.user.role !== 'SuperAdmin') {
+            return res.status(403).json({ message: 'Access Denied: Only SuperAdmin can perform bulk deletions.' });
+        }
+
+        const { ids } = req.body;
+
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            return res.status(400).json({ message: 'No members selected for deletion' });
+        }
+
+        const result = await Member.deleteMany({ _id: { $in: ids } });
+
+        res.json({ 
+            message: `${result.deletedCount} members deleted successfully`, 
+            deletedCount: result.deletedCount,
+            ids 
+        });
+    } catch (err) {
+        console.error('[Batch Delete Error]', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// INTERNAL HANDLER FOR BOTH PUT AND POST
+async function handleBulkSave(req, res) {
+    const mongoose = require('mongoose');
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+        const payload = req.body;
+        console.log('[DEBUG] bulk-save payload:', JSON.stringify(payload, null, 2));
+        const allToUpsert = [];
+        const marriages = [];
+
+        // Pre-fetch the current max memberId to use as counter base
+        const lastMember = await Member.findOne({ memberId: /^M\d+$/ }).sort({ memberId: -1 });
+        let memberIdCounter = lastMember && lastMember.memberId 
+            ? parseInt(lastMember.memberId.substring(1)) 
+            : 0;
+
+        // Pre-fetch familyId once at the start
+        const lastFamily = await Member.findOne({ familyId: /^F\d+$/ }).sort({ familyId: -1 });
+        let familyIdCounter = lastFamily && lastFamily.familyId 
+            ? parseInt(lastFamily.familyId.substring(1)) 
+            : 0;
+        let generatedFamilyId = null; // Will be set once for the whole family
+
+        function getNextMemberId() {
+            memberIdCounter++;
+            return `M${memberIdCounter.toString().padStart(4, '0')}`;
+        }
+
+        function getNextFamilyId() {
+            familyIdCounter++;
+            return `F${familyIdCounter.toString().padStart(4, '0')}`;
+        }
+
+        async function processRecursive(node, context = {}) {
+            if (!node) return null;
+
+            // 1. Map to Optimized Structure
+            const data = mapFlatToOptimized(node);
+            console.log(`[DEBUG] mapped node: ${data.firstName}, memberId: ${data.memberId}, _id: ${data._id}`);
+            if (!data._id) data._id = node._id || new mongoose.Types.ObjectId();
+            if (!data.memberId) {
+                data.memberId = getNextMemberId();
+                console.log(`[DEBUG] generated new memberId: ${data.memberId} for ${data.firstName}`);
+            }
+
+            // 1.5. Inherit Geography from Context if missing
+            if (context.geography) {
+                if (!data.geography) data.geography = {};
+                // Inherit state/district/taluka/village/address if not provided for this node
+                const geoFields = ['state', 'district', 'taluka', 'village', 'full_address', 'pincode'];
+                geoFields.forEach(f => {
+                    if (!data.geography[f] && context.geography[f]) {
+                        data.geography[f] = context.geography[f];
+                    }
+                });
+                
+                // Also sync top-level fields for indexing
+                data.state = data.state || data.geography.state;
+                data.district = data.district || data.geography.district;
+                data.taluka = data.taluka || data.geography.taluka;
+                data.city = data.city || data.geography.taluka;
+                data.village = data.village || data.geography.village;
+            }
+            
+            // 2. Inherit/Set Family Context
+            // Treat 'FNew' as invalid - generate a proper ID
+            if (context.familyId && context.familyId !== 'FNew') {
+                data.familyId = context.familyId;
+            } else if (!data.familyId || data.familyId === 'FNew') {
+                if (!generatedFamilyId) generatedFamilyId = getNextFamilyId();
+                data.familyId = generatedFamilyId;
+            }
+            
+            if (context.father) {
+                data.father = context.father;
+                if (context.fatherMemberId) data.fatherMemberId = context.fatherMemberId;
+            }
+            if (context.mother) {
+                data.mother = context.mother;
+                if (context.motherMemberId) data.motherMemberId = context.motherMemberId;
+            }
+
+            // 3. Handle Spouse of this node
+            if (node.spouse) {
+                const sData = mapFlatToOptimized(node.spouse);
+                if (!sData._id) sData._id = node.spouse._id || new mongoose.Types.ObjectId();
+                if (!sData.memberId) sData.memberId = getNextMemberId(); // Use counter-based ID
+                // Spouse inherits member's geography (they live together)
+                if (data.geography) {
+                    if (!sData.geography) sData.geography = {};
+                    const geoFields = ['state', 'district', 'taluka', 'village', 'full_address', 'pincode'];
+                    geoFields.forEach(f => {
+                        if (!sData.geography[f] && data.geography[f]) {
+                            sData.geography[f] = data.geography[f];
+                        }
+                    });
+                    
+                    // Sync top-level fields for indexing and display
+                    sData.state = sData.state || sData.geography.state;
+                    sData.district = sData.district || sData.geography.district;
+                    sData.taluka = sData.taluka || sData.geography.taluka;
+                    sData.city = sData.city || sData.geography.taluka;
+                    sData.village = sData.village || sData.geography.village;
+                }
+
+                sData.familyId = data.familyId;
+
+                // Circular Linkage (ObjectIds)
+                data.spouse = sData._id;
+                sData.spouse = data._id;
+                
+                // Also set string MemberIds for frontend
+                data.spouseMemberId = sData.memberId;
+                sData.spouseMemberId = data.memberId;
+
+                allToUpsert.push(sData);
+                
+                // Add to Marriage Collection
+                marriages.push({
+                    husbandId: data.gender === 'Male' ? data._id : sData._id,
+                    wifeId: data.gender === 'Female' ? data._id : sData._id,
+                    status: 'Active'
+                });
+            }
+
+            // 4. Handle Children of this node
+            if (node.children && Array.isArray(node.children)) {
+                const childIds = [];
+                
+                // Determine father and mother MemberIds for children
+                let fatherObjId = data.gender === 'Male' ? data._id : (context.father || null);
+                let motherObjId = data.gender === 'Female' ? data._id : (context.mother || null);
+                let fatherMId = data.gender === 'Male' ? data.memberId : (context.fatherMemberId || null);
+                let motherMId = data.gender === 'Female' ? data.memberId : (context.motherMemberId || null);
+                
+                // If member has spouse, use spouse as the other parent
+                if (node.spouse && data.gender === 'Male') {
+                    motherObjId = data.spouse;
+                    const spouseData = allToUpsert.find(m => m._id && m._id.toString() === data.spouse.toString());
+                    if (spouseData) motherMId = spouseData.memberId;
+                } else if (node.spouse && data.gender === 'Female') {
+                    fatherObjId = data.spouse;
+                    const spouseData = allToUpsert.find(m => m._id && m._id.toString() === data.spouse.toString());
+                    if (spouseData) fatherMId = spouseData.memberId;
+                }
+                
+                for (const c of node.children) {
+                    const cContext = {
+                        familyId: data.familyId,
+                        father: fatherObjId,
+                        mother: motherObjId,
+                        fatherMemberId: fatherMId,
+                        motherMemberId: motherMId,
+                        geography: data.geography // Pass geography to children for inheritance
+                    };
+                    const savedC = await processRecursive(c, cContext);
+                    if (savedC) childIds.push(savedC._id);
+                }
+                data.children = childIds;
+            }
+
+            allToUpsert.push(data);
+            return data;
+        }
+
+        // Start recursion from the main member
+        // Pass familyId only if it's a valid ID (not 'FNew')
+        const initialFamilyId = (payload.member.familyId && payload.member.familyId !== 'FNew') 
+            ? payload.member.familyId : null;
+        await processRecursive(payload.member, { familyId: initialFamilyId });
+
+        // Build Bulk Operations
+        const ops = allToUpsert.map(m => {
+            const { _id, ...updateData } = m; // Strip _id from $set to avoid Mongo errors
+            return {
+                updateOne: {
+                    filter: { _id: _id },
+                    update: { $set: updateData },
+                    upsert: true
+                }
+            };
+        });
+
+        if (ops.length > 0) {
+            await Member.bulkWrite(ops, { session });
+        }
+
+        // Save Marriages
+        if (marriages.length > 0) {
+            const Marriage = require('../models/Marriage');
+            const mOps = marriages.map(m => ({
+                updateOne: {
+                    filter: { husbandId: m.husbandId, wifeId: m.wifeId },
+                    update: { $set: m },
+                    upsert: true
+                }
+            }));
+            await Marriage.bulkWrite(mOps, { session });
+        }
+
+        await session.commitTransaction();
+        
+        // Return the main member data for frontend to use when linking children
+        const mainMember = allToUpsert[0];
+
+        // ---------------------------------------------------------
+        // AUTO-CREATE USER FOR PRIMARY MEMBERS (AND SPOUSES IF PRIMARY)
+        // ---------------------------------------------------------
+        // We do this AFTER the transaction ensures Member existence
+        console.log('[Bulk Save] Checking for Auto-User Creation...');
+        for (const mData of allToUpsert) {
+             // We need the saved member from DB to be sure of ID/MemberID
+             // Since we upserted, we can fetch or just try to use the mData if it has _id
+             if (mData.isPrimary && mData.memberId) {
+                 const recentMember = await Member.findOne({ memberId: mData.memberId });
+                 if (recentMember) {
+                     await ensureUserForPrimaryMember(recentMember);
+                 }
+             }
+        }
+
+
+        // ---------------------------------------------------------
+        // AUTO-CREATE USER FOR PRIMARY MEMBERS (AND SPOUSES IF PRIMARY)
+        // ---------------------------------------------------------
+        // We do this AFTER the transaction ensures Member existence
+        console.log('[Bulk Save] Checking for Auto-User Creation...');
+        for (const mData of allToUpsert) {
+             // We need the saved member from DB to be sure of ID/MemberID
+             // Since we upserted, we can fetch or just try to use the mData if it has _id
+             if (mData.isPrimary && mData.memberId) {
+                 const recentMember = await Member.findOne({ memberId: mData.memberId });
+                 if (recentMember) {
+                     await ensureUserForPrimaryMember(recentMember);
+                 }
+             }
+        }
+
+        res.status(200).json({ 
+            message: 'Family branch saved successfully', 
+            familyId: mainMember.familyId,
+            _id: mainMember._id,
+            memberId: mainMember.memberId,
+            spouseId: mainMember.spouse,
+            spouseMemberId: mainMember.spouseMemberId,
+            savedCount: allToUpsert.length
+        });
+    } catch (err) {
+        await session.abortTransaction();
+        console.error('[ERROR] /members/bulk-save:', err);
+        res.status(500).json({ error: err.message });
+    } finally {
+        session.endSession();
+    }
+}
+
+// Helper to generate IDs (moved here if not already available)
 async function generateMemberId() {
     const lastMember = await Member.findOne({ memberId: /^M\d+$/ }).sort({ memberId: -1 });
     if (lastMember && lastMember.memberId) {
-        // Extract number from M0001
         const num = parseInt(lastMember.memberId.substring(1)) + 1;
         return `M${num.toString().padStart(4, '0')}`;
     }
@@ -435,192 +772,142 @@ async function generateFamilyId() {
     return 'F0001';
 }
 
-// Helper to Map Flat Payload to Nested Schema (Supports Dot Notation for safe updates)
-function mapFlatToNested(payload) {
-    // Helper to safely trim and collapse multiple spaces
+// Helper to Map Flat Payload to Optimized Schema
+function mapFlatToOptimized(payload) {
+    console.log('[DEBUG] mapFlatToOptimized input payload memberId:', payload.memberId, '_id:', payload._id || payload.id);
     const clean = (val) => (typeof val === 'string' ? val.trim().replace(/\s+/g, ' ') : val);
+    
+    // Identity & Bio
+    const data = {
+        firstName: clean(payload.firstName),
+        middleName: clean(payload.middleName),
+        lastName: clean(payload.lastName),
+        prefix: clean(payload.prefix),
+        gender: payload.gender,
+        dob: payload.dob ? new Date(payload.dob) : null, // Explicit cast to Date
+        lifeStatus: payload.lifeStatus || 'Alive',
+        maritalStatus: payload.maritalStatus,
+        education: clean(payload.education),
+        occupation: clean(payload.occupation),
+        occupationType: payload.occupationType,
+        photoUrl: payload.photoUrl,
+        showOnMatrimony: String(payload.showOnMatrimony) === 'true',
+        blood_group: payload.blood_group,
+        height: clean(payload.height),
+        hobbies: Array.isArray(payload.hobbies) ? payload.hobbies : (payload.hobbies ? [payload.hobbies] : []),
+        familyId: payload.familyId,
+        // Ensure Deceased members cannot be Primary
+        isPrimary: (payload.lifeStatus === 'Deceased' || clean(payload.prefix) === 'स्व.') 
+            ? false 
+            : String(payload.isPrimary) === 'true',
+        maidenName: clean(payload.maidenName),
+        lineage_links: payload.lineage_links || {} 
+    };
 
-    const result = { ...payload };
-
-    // 1. Map Main Names
-    if (payload.firstName !== undefined) {
-        const fn = clean(payload.firstName);
-        result['personal_info.names.first_name'] = fn;
-        result.firstName = fn;
-    }
-    if (payload.middleName !== undefined) {
-        const mn = clean(payload.middleName);
-        result['personal_info.names.middle_name'] = mn;
-        result.middleName = mn;
-    }
-    if (payload.lastName !== undefined) {
-        const ln = clean(payload.lastName);
-        result['personal_info.names.last_name'] = ln;
-        result.lastName = ln;
-    }
-    if (payload.prefix !== undefined) {
-        result['personal_info.names.prefix'] = payload.prefix;
-        result.prefix = payload.prefix;
-    }
-    if (payload.lifeStatus !== undefined) {
-        result['personal_info.life_status'] = payload.lifeStatus;
-        result.lifeStatus = payload.lifeStatus;
-    }
-
-    // 2. Full Name Calculation (Backend Force)
-    const f = clean(payload.firstName || '');
-    const m = clean(payload.middleName || '');
-    const l = clean(payload.lastName || '');
-    const p = clean(payload.prefix || '');
-    if (f && l) {
-        result.fullName = `${p ? p + ' ' : ''}${f} ${m ? m + ' ' : ''}${l}`.replace(/\s+/g, ' ').trim();
+    // Manually calculate fullName for updates (bypasses pre-save hook)
+    if (data.firstName && data.lastName) {
+        const p = data.prefix ? data.prefix + ' ' : '';
+        const m = data.middleName ? data.middleName + ' ' : '';
+        data.fullName = `${p}${data.firstName} ${m}${data.lastName}`.replace(/\s+/g, ' ').trim();
     }
 
-    // 3. Spouse Name Mapping (Explicit construction)
-    let sfn = clean(payload.spouseName || '');
-    const smn = clean(payload.spouseMiddleName || '');
-    const sln = clean(payload.spouseLastName || '');
-    const sp = clean(payload.spousePrefix || '');
+    // Contact
+    data.contact = {
+        mobile: clean(payload.phone || payload.mobile),
+        email: clean(payload.email),
+        whatsapp: clean(payload.whatsapp)
+    };
 
-    // Fallback: If spouseDetails part of payload (common in recursive), 
-    // we use them to ensure spouseName is set at root
-    if (!sfn && payload.spouse) {
-        const sd = typeof payload.spouse === 'string' ? JSON.parse(payload.spouse) : payload.spouse;
-        sfn = clean(sd.firstName || sd.spouseName || '');
-    }
+    // Geography
+    data.geography = {
+        pincode: payload.pincode,
+        state: payload.state,
+        district: payload.district,
+        taluka: payload.city || payload.taluka,
+        village: payload.village,
+        full_address: clean(payload.address)
+    };
 
-    if (sfn) {
-        result.spouseName = sfn;
-        result.spouseMiddleName = smn; // FIXED: Ensure propagated
-        result.spouseLastName = sln;
-        result.spousePrefix = sp;
-        
-        // Calculate Spouse Full Name
-        result.spouseFullName = `${sp ? sp + ' ' : ''}${sfn} ${smn ? smn + ' ' : ''}${sln}`.replace(/\s+/g, ' ').trim();
-    }
+    // Relations (Refs)
+    if (payload.fatherId) data.father = payload.fatherId;
+    if (payload.motherId) data.mother = payload.motherId;
+    if (payload.spouseId) data.spouse = payload.spouseId;
+    if (payload.childrenIds) data.children = Array.isArray(payload.childrenIds) ? payload.childrenIds : [payload.childrenIds];
+    
+    // Explicitly carry over IDs if present
+    if (payload._id) data._id = payload._id;
+    if (payload.memberId) data.memberId = payload.memberId;
 
-    // 4. Details & Bio
-    if (payload.dob) {
-        result['personal_info.dob'] = payload.dob;
-        result.dob = payload.dob;
-    }
-    if (payload.gender) {
-        result['personal_info.gender'] = payload.gender;
-        result.gender = payload.gender;
-    }
-    if (payload.occupation) {
-        result['personal_info.biodata.occupation'] = clean(payload.occupation);
-        result.occupation = clean(payload.occupation);
-    }
-    if (payload.education) {
-        result['personal_info.biodata.education'] = clean(payload.education);
-        result.education = clean(payload.education);
-    }
-    if (payload.height) {
-        result['personal_info.biodata.height'] = clean(payload.height);
-        result.height = clean(payload.height);
-    }
-    if (payload.phone || payload.mobile) {
-        const ph = clean(payload.phone || payload.mobile);
-        result['personal_info.biodata.contact.mobile'] = ph;
-        result.phone = ph;
-    }
-    if (payload.email) {
-        const em = clean(payload.email);
-        result['personal_info.biodata.contact.email'] = em;
-        result.email = em;
-    }
-
-    // 5. Geography
-    if (payload.state) result['geography.state'] = payload.state;
-    if (payload.district) result['geography.district'] = payload.district;
-    if (payload.city || payload.taluka) result['geography.taluka'] = payload.city || payload.taluka;
-    if (payload.village) result['geography.village'] = payload.village;
-    if (payload.address) result['geography.full_address'] = clean(payload.address);
-
-    // 6. Matrimony Privacy Flag
-    if (payload.showOnMatrimony !== undefined) {
-        // Handle string 'true'/'false' from FormData
-        const isMarried = payload.maritalStatus === 'Married';
-        const isDeceased = (payload.lifeStatus === 'Deceased' || payload.prefix === 'Late');
-        const val = !isMarried && !isDeceased && String(payload.showOnMatrimony).toLowerCase() === 'true';
-        result['personal_info.showOnMatrimony'] = val;
-        result.showOnMatrimony = val; // Also set at root if needed for virtuals/legacy, but strictly it's in personal_info
-    }
-
-    // 7. Resolved Names (Persist to root for easy display/search)
-    if (payload.fullName) result.fullName = payload.fullName;
-    if (payload.stateName) result.stateName = payload.stateName;
-    if (payload.districtName) result.districtName = payload.districtName;
-    if (payload.talukaName) result.talukaName = payload.talukaName;
-    if (payload.villageName) result.villageName = payload.villageName;
-
-    // 8. Photo URLs (Explicitly Persist)
-    if (payload.photoUrl) result.photoUrl = payload.photoUrl;
-    if (payload.spousePhotoUrl) result.spousePhotoUrl = payload.spousePhotoUrl;
-
-    return result;
+    return data;
 }
 
-// Recursive Upsert Helper
+// Recursive Upsert Helper (Optimized)
 async function upsertMemberRecursive(memberData, context = {}) {
     try {
-        // Map Flat -> Nested FIRST
-        let data = mapFlatToNested({ ...memberData });
+        let data = mapFlatToOptimized({ ...memberData });
 
         // Inherit Context
         if (context.familyId) data.familyId = context.familyId;
-        if (context.fatherId) data.fatherId = context.fatherId;
-        if (context.motherId) data.motherId = context.motherId;
+        if (context.father) data.father = context.father;
+        if (context.mother) data.mother = context.mother;
 
-        // Upsert Main Member
         let savedMember;
-        const existsId = data.id || data._id;
+        const existsId = memberData.id || memberData._id;
 
         if (existsId) {
-            savedMember = await Member.findByIdAndUpdate(existsId, data, { new: true });
+            const { _id, ...updateFields } = data; // Strip _id for safety
+            savedMember = await Member.findByIdAndUpdate(existsId, updateFields, { new: true });
         } else {
             if (!data.memberId) data.memberId = await generateMemberId();
-            // Default surname if missing
             if (!data.lastName && context.lastName) data.lastName = context.lastName;
-
             savedMember = await new Member(data).save();
         }
 
         if (!savedMember) return null;
 
-        // Handle Spouse (Upsert) - If provided in payload
-        if (data.spouse) {
-            let spouseData = typeof data.spouse === 'string' ? JSON.parse(data.spouse) : data.spouse;
+        // Helper to Ensure User Account exists for Primary Members
+        if (savedMember.isPrimary) {
+             await ensureUserForPrimaryMember(savedMember);
+        }
 
-            // CRITICAL CHANGE (User Request): Spouse inherits Member's Family ID (Same Household)
-            // Unless explicitly provided (which implies Birth Family context), spouse joins the member's family unit.
-            if (!spouseData.familyId) spouseData.familyId = savedMember.familyId;
-
-            // Map Spouse Data Flat -> Nested
-            spouseData = mapFlatToNested(spouseData);
-            console.log("DEBUG: Spouse Data after mapping:", JSON.stringify(spouseData, null, 2));
-
-            // REMOVED: spouseData.spouseId = savedMember._id; // Do not store explicit link on Member
-
-            spouseData.city = spouseData.city || savedMember.city;
-            spouseData.village = spouseData.village || savedMember.village;
-            if (data.spousePhotoUrl) spouseData.photoUrl = data.spousePhotoUrl;
-
-            // Inherit Last Name if standard (Wife takes Husband's name? User said: "relationships are not maintained correctly", but didn't ban name changes)
-            // But usually name change is fine. 
+        // Handle Spouse
+        if (memberData.spouse) {
+            let spouseData = typeof memberData.spouse === 'string' ? JSON.parse(memberData.spouse) : memberData.spouse;
+            spouseData = mapFlatToOptimized(spouseData);
+            spouseData.familyId = savedMember.familyId;
+            spouseData.spouse = savedMember._id;
+            
             if (!spouseData.lastName) spouseData.lastName = savedMember.lastName;
 
+            // Spouse inherits member's geography (they live together)
+            // Only copy if spouse doesn't have their own location set
+            if (savedMember.geography) {
+                if (!spouseData.geography) {
+                    spouseData.geography = {};
+                }
+                // Inherit each field only if not already set on spouse
+                const geoFields = ['state', 'district', 'taluka', 'village', 'full_address', 'pincode'];
+                geoFields.forEach(f => {
+                    if (!spouseData.geography[f] && savedMember.geography[f]) {
+                        spouseData.geography[f] = savedMember.geography[f];
+                    }
+                });
+
+                // Sync top-level fields for indexing and display
+                spouseData.state = spouseData.state || spouseData.geography.state;
+                spouseData.district = spouseData.district || spouseData.geography.district;
+                spouseData.taluka = spouseData.taluka || spouseData.geography.taluka;
+                spouseData.city = spouseData.city || spouseData.geography.taluka;
+                spouseData.village = spouseData.village || spouseData.geography.village;
+            }
+
             let savedSpouse;
-
-            // Check if Marriage exists
-            // We need to find if there is an existing spouse for this member? 
-            // Or if we are updating a specific spouse passed in spouseData (if it has ID)
-
-            if (spouseData.id || spouseData._id) {
-                savedSpouse = await Member.findByIdAndUpdate(spouseData.id || spouseData._id, spouseData, { new: true });
+            const sId = spouseData.id || spouseData._id;
+            if (sId) {
+                savedSpouse = await Member.findByIdAndUpdate(sId, spouseData, { new: true });
             } else {
-                // [FIX duplicate spouses] Check if ANY active marriage exists for this member? 
+                // Check existing marriage for duplicate prevention
+                const Marriage = require('../models/Marriage');
                 const existingMarriage = await Marriage.findOne({
                     $or: [{ husbandId: savedMember._id }, { wifeId: savedMember._id }],
                     status: 'Active'
@@ -630,24 +917,16 @@ async function upsertMemberRecursive(memberData, context = {}) {
                     const existingSpouseId = existingMarriage.husbandId.toString() === savedMember._id.toString() 
                         ? existingMarriage.wifeId 
                         : existingMarriage.husbandId;
-                    
-                    console.log(`[Duplicate Prevention] Found existing spouse ${existingSpouseId} via Marriage record.`);
-                    spouseData._id = existingSpouseId; // Treat as Update
                     savedSpouse = await Member.findByIdAndUpdate(existingSpouseId, spouseData, { new: true });
-                }
-                
-                // If still no spouse found, verify if we accidentally created one previously without linking?
-                // For now, proceed to create new.
-                if (!savedSpouse) {
+                } else {
                     if (!spouseData.memberId) spouseData.memberId = await generateMemberId();
-                    const newSpouse = new Member(spouseData);
-                    savedSpouse = await newSpouse.save();
+                    savedSpouse = await new Member(spouseData).save();
                 }
             }
 
-            // Create/Update Marriage Record
             if (savedSpouse) {
-                const marriage = await Marriage.findOneAndUpdate(
+                const Marriage = require('../models/Marriage');
+                await Marriage.findOneAndUpdate(
                     {
                         $or: [
                             { husbandId: savedMember._id, wifeId: savedSpouse._id },
@@ -662,31 +941,29 @@ async function upsertMemberRecursive(memberData, context = {}) {
                     { upsert: true, new: true }
                 );
 
-                // CRITICAL: Explicitly link on Member (Legacy Field) for Frontend
-                savedMember.spouseId = savedSpouse._id;
-                savedSpouse.spouseId = savedMember._id;
-
+                // Bidirectional Link
+                savedMember.spouse = savedSpouse._id;
                 await savedMember.save();
-                await savedSpouse.save();
             }
         }
 
         // Handle Children (Recursive)
-        if (data.children) {
-            const childrenData = typeof data.children === 'string' ? JSON.parse(data.children) : data.children;
-
+        if (memberData.children) {
+            const childrenData = typeof memberData.children === 'string' ? JSON.parse(memberData.children) : memberData.children;
             if (Array.isArray(childrenData) && childrenData.length > 0) {
-                // Optimization: Process children in parallel instead of sequential await
-                console.log(`[Performance] Processing ${childrenData.length} children in parallel`);
-                await Promise.all(childrenData.map(async (child) => {
+                const childIds = [];
+                for (const child of childrenData) {
                     const childContext = {
-                        familyId: savedMember.familyId, // Children inherit birth family from parent (Linkage)
-                        fatherId: savedMember.gender === 'Male' ? savedMember._id : null, 
-                        motherId: savedMember.gender === 'Female' ? savedMember._id : null,
+                        familyId: savedMember.familyId,
+                        father: savedMember.gender === 'Male' ? savedMember._id : (context.father || null),
+                        mother: savedMember.gender === 'Female' ? savedMember._id : (context.mother || null),
                         lastName: savedMember.lastName
                     };
-                    return upsertMemberRecursive(child, childContext);
-                }));
+                    const savedChild = await upsertMemberRecursive(child, childContext);
+                    if (savedChild) childIds.push(savedChild._id);
+                }
+                savedMember.children = childIds;
+                await savedMember.save();
             }
         }
 
@@ -741,36 +1018,7 @@ router.post('/', verifyToken, checkPermission('member.create'), uploadMiddleware
     try {
         const payload = req.body;
 
-        // Fix for Multer Array issue (if familyId is sent multiple times)
-        if (Array.isArray(payload.familyId)) {
-            payload.familyId = payload.familyId[payload.familyId.length - 1];
-        }
-
-        // 0. Duplicate Check (Prevent duplicates for children)
-        if (payload.firstName && payload.lastName && (payload.fatherId || payload.motherId)) {
-            const duplicateCheck = await Member.findOne({
-                firstName: new RegExp(`^${payload.firstName}$`, 'i'),
-                lastName: new RegExp(`^${payload.lastName}$`, 'i'),
-                $or: [{ fatherId: payload.fatherId }, { motherId: payload.motherId }]
-            });
-            if (duplicateCheck) {
-                return res.status(409).json({ message: 'A child with this name already exists for this parent.' });
-            }
-        }
-
-        // 1. Auto-Generate memberId
-        payload.memberId = await generateMemberId();
-
-        // 2. Family ID Logic
-        // If Family ID is not provided or is 'FNew', we assume this is a new Family Head or Independent Member.
-        // We generate a new Family ID.
-        if (!payload.familyId || payload.familyId === 'FNew') {
-            payload.familyId = await generateFamilyId();
-        }
-
-
-
-        // Handle File Upload (Memory Storage - Convert to Base64)
+        // Handle File Uploads
         if (req.files) {
             if (req.files['photo']) {
                 const file = req.files['photo'][0];
@@ -782,325 +1030,13 @@ router.post('/', verifyToken, checkPermission('member.create'), uploadMiddleware
             }
         }
 
-        // Map Payload to Nested Mongoose Schema
-        // (The Frontend sends flat structure, but Model requires nested 'personal_info')
-        if (!payload.personal_info) {
-            payload.personal_info = {
-                names: {
-                    first_name: payload.firstName,
-                    middle_name: payload.middleName,
-                    last_name: payload.lastName,
-                    prefix: payload.prefix, // Ensure prefix is mapped
-                    maiden_name: payload.maidenName // Assuming frontend sends this if needed
-                },
-                dob: payload.dob,
-                gender: payload.gender,
-                life_status: payload.lifeStatus || 'Alive', // Use payload or default to Alive
-                showOnMatrimony: payload.maritalStatus !== 'Married' && String(payload.showOnMatrimony).toLowerCase() === 'true' && (payload.lifeStatus !== 'Deceased'), // Add Matrimony Flag (Only for Single/Divorced/Widowed and ALIVE)
-                biodata: {
-                    education: payload.education,
-                    height: payload.height,
-                    occupation: payload.occupation,
-                    contact: {
-                        mobile: payload.mobile || payload.phone,
-                        email: payload.email
-                    }
-                }
-            };
-        }
-        if (!payload.geography) {
-            payload.geography = {
-                state: payload.state,
-                district: payload.district,
-                taluka: payload.city || payload.taluka,
-                village: payload.village,
-                full_address: payload.address
-            };
-        }
-
-        // Calculate Main Member Full Name (Backend Force)
-        const p = payload.prefix ? payload.prefix.trim() : '';
-        const f = payload.firstName ? payload.firstName.trim() : '';
-        const m = payload.middleName ? payload.middleName.trim() : '';
-        const l = payload.lastName ? payload.lastName.trim() : '';
+        // Use Recursive Upsert for clean handling
+        const savedMember = await upsertMemberRecursive(payload);
         
-        if (f && l) {
-            payload.fullName = `${p ? p + ' ' : ''}${f} ${m ? m + ' ' : ''}${l}`.replace(/\s+/g, ' ').trim();
-        }
-
-        // Calculate Spouse Full Name (for persistence)
-        if (payload.spouseName) {
-            const sp = payload.spousePrefix ? payload.spousePrefix.trim() : '';
-            const sfn = (payload.spouseName || '').trim();
-            const smn = (payload.spouseMiddleName || '').trim();
-            const sln = (payload.spouseLastName || '').trim();
-            payload.spouseFullName = `${sp ? sp + ' ' : ''}${sfn} ${smn ? smn + ' ' : ''}${sln}`.replace(/\s+/g, ' ').trim();
-        }
-
-        const newMember = new Member(payload);
-
-        // Auto-set Primary if creating a New Family
-        if (payload.familyId && payload.familyId.startsWith('F') && !payload.familyId.startsWith('FNew')) {
-            // If joining existing family, check if anyone else is primary? 
-            // Logic: If user specifically sets FamilyID, we assume they might not be primary unless specified.
-            // But for 'FNew' logic handled above:
-        }
-
-        // Logic: if we generated a NEW family ID, this person is likely the Primary
-        // We can infer this if they are 'Head' or 'Married' Male starting a family
-        // Simple rule: If familyId was generated in this request, set isPrimary = true
-        // Re-checking the familyId generation logic above...
-
-        // Let's refine: If payload.familyId was JUST generated (it wasn't in list of existing families), they are primary.
-        // Easier: Check if any other member exists with this familyId. If not, this is the first -> Primary.
-        const existingFamilyMembers = await Member.countDocuments({ familyId: payload.familyId });
-        if (existingFamilyMembers === 0) {
-            newMember.isPrimary = true;
-        }
-
-        const savedMember = await newMember.save();
-        
-        // Invalidate Dashboard Cache
-        cacheService.del(cacheService.KEYS.DASHBOARD_STATS);
-
-        // ---------------------------------------------------------
-        // HANDLE MARRIAGE LINKING (If spouseId provided)
-        // ---------------------------------------------------------
-        if (payload.spouseId) {
-            const spouse = await Member.findById(payload.spouseId);
-            if (spouse) {
-                await Marriage.create({
-                    husbandId: savedMember.gender === 'Male' ? savedMember._id : spouse._id,
-                    wifeId: savedMember.gender === 'Female' ? savedMember._id : spouse._id,
-                    status: 'Active'
-                });
-                console.log(`Created Marriage between ${savedMember.firstName} and ${spouse.firstName}`);
-            }
-        }
-
-        // ---------------------------------------------------------
-        // AUTO-CREATE SPOUSE (If Married and Spouse Name Provided)
-        // ---------------------------------------------------------
-        // ---------------------------------------------------------
-        // AUTO-CREATE SPOUSE (If Married and Spouse Name Provided)
-        // ---------------------------------------------------------
-        if (payload.maritalStatus === 'Married' && payload.spouseName) {
-            try {
-                const spousePayload = {
-                    memberId: await generateMemberId(),
-                    personal_info: {
-                        names: {
-                            first_name: payload.spouseName,
-                            middle_name: payload.spouseMiddleName || '',
-                            last_name: payload.spouseLastName || (payload.gender === 'Male' ? payload.lastName : ''),
-                            prefix: payload.spousePrefix, // Ensure prefix is mapped
-                        },
-                        dob: payload.spouseDob || payload.dob,
-                        gender: payload.spouseGender || (payload.gender === 'Male' ? 'Female' : 'Male'),
-                        life_status: 'Alive',
-                        biodata: {} // Add any other bio fields if available
-                    },
-                    geography: {
-                        state: payload.state,
-                        district: payload.district,
-                        taluka: payload.city || payload.taluka,
-                        village: payload.village,
-                        full_address: payload.address
-                    },
-                    maritalStatus: 'Married',
-                    familyId: savedMember.familyId, // Inherit Family ID (Part of same household/tree)
-                    photoUrl: payload.spousePhotoUrl,
-                    // Legacy fields for backward compatibility
-                    firstName: payload.spouseName,
-                    middleName: payload.spouseMiddleName || '', // FIXED: Added root middleName
-                    lastName: payload.spouseLastName || (payload.gender === 'Male' ? payload.lastName : ''),
-                    gender: payload.spouseGender || (payload.gender === 'Male' ? 'Female' : 'Male'),
-                    dob: payload.spouseDob || payload.dob,
-                    
-                    // Calculate Spouse's Own Full Name
-                    fullName: `${payload.spousePrefix ? payload.spousePrefix.trim() + ' ' : ''}${payload.spouseName} ${payload.spouseMiddleName ? payload.spouseMiddleName.trim() + ' ' : ''}${payload.spouseLastName || (payload.gender === 'Male' ? payload.lastName : '')}`.replace(/\s+/g, ' ').trim(),
-                    
-                    // Reciprocal Spouse Details (So the spouse record points back to the main member)
-                    spouseName: savedMember.firstName,
-                    spouseMiddleName: savedMember.middleName,
-                    spouseLastName: savedMember.lastName,
-                    spouseFullName: savedMember.fullName || `${savedMember.firstName} ${savedMember.middleName ? savedMember.middleName + ' ' : ''}${savedMember.lastName}`.trim(),
-                };
-
-                let savedSpouse;
-
-                // [Duplicate Prevention] Check for Existing Marriage
-                const existingMarriage = await Marriage.findOne({
-                    $or: [{ husbandId: savedMember._id }, { wifeId: savedMember._id }],
-                    status: 'Active'
-                });
-
-                if (existingMarriage) {
-                    const existingSpouseId = existingMarriage.husbandId.toString() === savedMember._id.toString() 
-                        ? existingMarriage.wifeId 
-                        : existingMarriage.husbandId;
-                    
-                    console.log(`[POST] Found existing spouse ${existingSpouseId} via Marriage record. Linking...`);
-                    // Update existing spouse if needed, or just link
-                    savedSpouse = await Member.findById(existingSpouseId);
-                    // update fields if we want to sync? For now just link.
-                } else {
-                    // Create New Spouse
-                    const newSpouse = new Member(spousePayload);
-                    savedSpouse = await newSpouse.save();
-                    console.log(`Auto-created Spouse Member: ${savedSpouse.firstName} (${savedSpouse.memberId}) linked to ${savedMember.memberId}`);
-
-                    // Create Marriage
-                    await Marriage.create({
-                        husbandId: savedMember.gender === 'Male' ? savedMember._id : savedSpouse._id,
-                        wifeId: savedMember.gender === 'Female' ? savedMember._id : savedSpouse._id,
-                        status: 'Active'
-                    });
-                }
-
-                // CRITICAL: Explicitly link on Member (Legacy Field)
-                if (savedSpouse) {
-                    savedMember.spouseId = savedSpouse._id;
-                    savedSpouse.spouseId = savedMember._id; // Bi-directional
-                    
-                    await savedMember.save();
-                    await savedSpouse.save();
-                }
-
-            } catch (spouseErr) {
-                console.error('Failed to auto-create spouse member:', spouseErr.message);
-            }
-        }
-
-        // ---------------------------------------------------------
-        // HANDLE FAMILY LINEAGE LINKS (New Relationship Structure)
-        // ---------------------------------------------------------
-        if (payload.family_lineage_links) {
-            try {
-                const links = typeof payload.family_lineage_links === 'string'
-                    ? JSON.parse(payload.family_lineage_links)
-                    : payload.family_lineage_links;
-
-                // Ensure structure exists
-                savedMember.family_lineage_links = {
-                    immediate_relations: links.immediate_relations || {},
-                    extended_network: {
-                        paternal: links.extended_network?.paternal || {},
-                        maternal: links.extended_network?.maternal || {},
-                        in_laws: links.extended_network?.in_laws || {}
-                    }
-                };
-
-                await savedMember.save();
-                console.log('Saved family_lineage_links for member:', savedMember.memberId);
-            } catch (linkErr) {
-                console.error('Failed to save family_lineage_links:', linkErr.message);
-            }
-        }
-
-        // ---------------------------------------------------------
-        // AUTO-CREATE USER
-        // ---------------------------------------------------------
-        // ---------------------------------------------------------
-        // AUTO-CREATE USER
-        // ---------------------------------------------------------
-        try {
-            const User = require('../models/User');
-            const bcrypt = require('bcryptjs');
-
-            const isAdmin = req.user && (req.user.role === 'Admin' || req.user.role === 'SuperAdmin');
-
-            if (isAdmin) {
-                 // ADMIN LOGIC: Create Verified User with Name-based Username
-                 // 1. Generate Username (firstname + lastname, lowercase)
-                 const fName = (payload.firstName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-                 const lName = (payload.lastName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-                 let baseUsername = `${fName}${lName}`;
-                 
-                 if (!baseUsername) baseUsername = `user${savedMember.memberId}`; // Fallback
-
-                 // Ensure uniqueness
-                 let username = baseUsername;
-                 let counter = 1;
-                 while (await User.findOne({ username })) {
-                     username = `${baseUsername}${counter}`;
-                     counter++;
-                 }
-
-                 // 2. Hash Password (Default: 123456)
-                 const hashedPassword = await bcrypt.hash('123456', 10);
-
-                 // 3. Create User
-                 const newUser = new User({
-                     username: username,
-                     password: hashedPassword,
-                     email: payload.email || undefined, // Use email if provided (might be sparse unique)
-                     mobile: payload.mobile || payload.phone || undefined,
-                     role: 'Member',
-                     isVerified: true, // Auto-verified by Admin
-                     isActive: true,
-                     name: savedMember.fullName || `${savedMember.firstName} ${savedMember.lastName}`,
-                     memberId: savedMember._id, // Link using ObjectId
-                     permissions: ['member.view', 'member.edit'] // Basic permissions
-                 });
-
-                 await newUser.save();
-                 console.log(`[Auto-Create] Created Admin-Verified User '${username}' for Member '${savedMember.fullName}'`);
-
-            } else {
-                // DEFAULT LOGIC: Create Pending User with ID-based Username
-                const mobilePassword = payload.mobile || '123456'; 
-                const hashedPassword = await bcrypt.hash(mobilePassword, 10);
-
-                const newUser = new User({
-                    username: savedMember.memberId, // Login with Member ID
-                    password: hashedPassword,
-                    name: `${savedMember.firstName} ${savedMember.lastName}`,
-                    email: savedMember.email, 
-                    mobile: savedMember.mobile,
-                    role: 'Member',
-                    isVerified: false, // PENDING ADMIN APPROVAL
-                    memberId: savedMember.memberId
-                });
-
-                await newUser.save();
-                console.log(`[Auto-Create] Created Pending User '${savedMember.memberId}' for Member '${savedMember.memberId}'`);
-            }
-        } catch (err) {
-            console.error(`[Auto-Create] Failed to create user for member ${savedMember.memberId}:`, err.message);
-        }
-
-        // ---------------------------------------------------------
-
-
-        // ---------------------------------------------------------
-        // AUTO-LINK USER TO MEMBER (If User has no profile)
-        // ---------------------------------------------------------
-        if (req.user && req.user.id) {
-            const User = require('../models/User');
-            // Fetch fresh user to check current linkage status
-            const currentUser = await User.findById(req.user.id);
-            
-            if (currentUser && !currentUser.memberId) {
-                console.log(`[Auto-Link] Linking User ${currentUser.username} to new Member ${savedMember.memberId}`);
-                currentUser.memberId = savedMember._id; // Using ObjectId for robust linking (consistent with link_admin.js)
-                await currentUser.save();
-            }
-        }
-
         res.status(201).json(savedMember);
     } catch (err) {
-        if (err.name === 'ValidationError') {
-            const errors = Object.values(err.errors).map(val => ({
-                field: val.path,
-                message: val.message
-            }));
-            return res.status(400).json({ 
-                message: 'Validation Failed', 
-                errors: errors 
-            });
-        }
-        res.status(500).json({ message: err.message }); // Use 'message' standard
+        console.error('[ERROR] POST /members:', err);
+        res.status(500).json({ error: err.message });
     }
 });
 
@@ -1366,6 +1302,9 @@ router.get('/stats/dashboard', verifyToken, checkPermission('member.view'), asyn
             educationByGender,
             ageDistribution,
             maritalStatusStats,
+            districtDistribution,
+            occupationDistribution,
+            bloodGroupDistribution,
             genderRatioAge,
             
             // 5. Other Widget Data
@@ -1376,30 +1315,30 @@ router.get('/stats/dashboard', verifyToken, checkPermission('member.view'), asyn
             upcomingEvents
         ] = await Promise.all([
             // Basic Counts (ALIVE ONLY)
-            Member.countDocuments({ 'personal_info.life_status': { $ne: 'Deceased' } }),
-            Member.countDocuments({ gender: 'Male', 'personal_info.life_status': { $ne: 'Deceased' } }),
-            Member.countDocuments({ gender: 'Female', 'personal_info.life_status': { $ne: 'Deceased' } }),
-            Member.countDocuments({ maritalStatus: 'Married', 'personal_info.life_status': { $ne: 'Deceased' } }),
-            Member.countDocuments({ gender: 'Male', maritalStatus: 'Single', 'personal_info.life_status': { $ne: 'Deceased' } }),
-            Member.countDocuments({ gender: 'Female', maritalStatus: 'Single', 'personal_info.life_status': { $ne: 'Deceased' } }),
-            Member.countDocuments({ isPrimary: true, 'personal_info.life_status': { $ne: 'Deceased' } }),
+            Member.countDocuments({ lifeStatus: { $ne: 'Deceased' } }),
+            Member.countDocuments({ gender: 'Male', lifeStatus: { $ne: 'Deceased' } }),
+            Member.countDocuments({ gender: 'Female', lifeStatus: { $ne: 'Deceased' } }),
+            Member.countDocuments({ maritalStatus: 'Married', lifeStatus: { $ne: 'Deceased' } }),
+            Member.countDocuments({ gender: 'Male', maritalStatus: 'Single', lifeStatus: { $ne: 'Deceased' } }),
+            Member.countDocuments({ gender: 'Female', maritalStatus: 'Single', lifeStatus: { $ne: 'Deceased' } }),
+            Member.countDocuments({ isPrimary: true, lifeStatus: { $ne: 'Deceased' } }),
 
             // Weekly Stats (ALIVE ONLY)
-            Member.countDocuments({ createdAt: { $gte: lastWeek }, 'personal_info.life_status': { $ne: 'Deceased' } }),
-            Member.countDocuments({ gender: 'Male', createdAt: { $gte: lastWeek }, 'personal_info.life_status': { $ne: 'Deceased' } }),
-            Member.countDocuments({ gender: 'Female', createdAt: { $gte: lastWeek }, 'personal_info.life_status': { $ne: 'Deceased' } }),
-            Member.countDocuments({ maritalStatus: 'Married', createdAt: { $gte: lastWeek }, 'personal_info.life_status': { $ne: 'Deceased' } }),
+            Member.countDocuments({ createdAt: { $gte: lastWeek }, lifeStatus: { $ne: 'Deceased' } }),
+            Member.countDocuments({ gender: 'Male', createdAt: { $gte: lastWeek }, lifeStatus: { $ne: 'Deceased' } }),
+            Member.countDocuments({ gender: 'Female', createdAt: { $gte: lastWeek }, lifeStatus: { $ne: 'Deceased' } }),
+            Member.countDocuments({ maritalStatus: 'Married', createdAt: { $gte: lastWeek }, lifeStatus: { $ne: 'Deceased' } }),
 
             // Distinct Families
             Member.aggregate([
-                { $match: { 'personal_info.life_status': { $ne: 'Deceased' } } },
+                { $match: { lifeStatus: { $ne: 'Deceased' } } },
                 { $group: { _id: "$familyId" } },
                 { $count: "count" }
             ]).catch(() => []),
 
             // Education by Gender (ALIVE ONLY)
             Member.aggregate([
-                { $match: { education: { $exists: true, $ne: "" }, 'personal_info.life_status': { $ne: 'Deceased' } } },
+                { $match: { education: { $exists: true, $ne: "" }, lifeStatus: { $ne: 'Deceased' } } },
                 {
                     $addFields: {
                         eduCategory: {
@@ -1430,7 +1369,7 @@ router.get('/stats/dashboard', verifyToken, checkPermission('member.view'), asyn
 
             // Revised Age Distribution (ALIVE ONLY)
             Member.aggregate([
-                { $match: { dob: { $exists: true, $ne: null }, 'personal_info.life_status': { $ne: 'Deceased' } } },
+                { $match: { dob: { $exists: true, $ne: null }, lifeStatus: { $ne: 'Deceased' } } },
                 {
                     $project: {
                         age: {
@@ -1450,15 +1389,37 @@ router.get('/stats/dashboard', verifyToken, checkPermission('member.view'), asyn
 
             // Marital Stats (ALIVE ONLY)
             Member.aggregate([
-                { $match: { 'personal_info.life_status': { $ne: 'Deceased' } } },
+                { $match: { lifeStatus: { $ne: 'Deceased' } } },
                 { $group: { _id: "$maritalStatus", count: { $sum: 1 } } }
+            ]).catch(() => []),
+
+            // District Distribution (ALIVE ONLY) - Use districtName for display
+            Member.aggregate([
+                { $match: { districtName: { $exists: true, $ne: "" }, lifeStatus: { $ne: 'Deceased' } } },
+                { $group: { _id: "$districtName", count: { $sum: 1 } } },
+                { $sort: { count: -1 } },
+                { $limit: 5 }
+            ]).catch(() => []),
+
+            // Occupation Distribution (ALIVE ONLY)
+            Member.aggregate([
+                { $match: { occupationType: { $exists: true, $ne: "" }, lifeStatus: { $ne: 'Deceased' } } },
+                { $group: { _id: "$occupationType", count: { $sum: 1 } } },
+                { $sort: { count: -1 } }
+            ]).catch(() => []),
+
+            // Blood Group Distribution (ALIVE ONLY)
+            Member.aggregate([
+                { $match: { blood_group: { $exists: true, $ne: "" }, lifeStatus: { $ne: 'Deceased' } } },
+                { $group: { _id: "$blood_group", count: { $sum: 1 } } },
+                { $sort: { count: -1 } }
             ]).catch(() => []),
             
             // Gender Ratio (Dummy/Empty placeholder as before)
             Promise.resolve([]), 
 
             // Recent Members (Alive Only)
-            Member.find({ 'personal_info.life_status': { $ne: 'Deceased' } })
+            Member.find({ lifeStatus: { $ne: 'Deceased' } })
                 .sort({ createdAt: -1 })
                 .limit(5)
                 .select('firstName lastName memberId gender city maritalStatus dob photoUrl education phone')
@@ -1493,7 +1454,10 @@ router.get('/stats/dashboard', verifyToken, checkPermission('member.view'), asyn
             charts: {
                 education: educationByGender.sort((a,b) => b.count - a.count),
                 age: ageDistribution.sort((a,b) => (typeof a._id === 'number' ? a._id : 999) - (typeof b._id === 'number' ? b._id : 999)),
-                marital: maritalStatusStats
+                marital: maritalStatusStats,
+                districts: districtDistribution,
+                occupations: occupationDistribution,
+                bloodGroups: bloodGroupDistribution
             },
             widgets: {
                 recentMembers: recentMembers || [],
@@ -1531,8 +1495,7 @@ router.patch('/:id/matrimony-status', verifyToken, checkPermission('member.updat
         const member = await Member.findByIdAndUpdate(
             req.params.id, 
             { 
-                'personal_info.showOnMatrimony': showOnMatrimony,
-                showOnMatrimony: showOnMatrimony // Sync root field
+                showOnMatrimony: showOnMatrimony
             }, 
             { new: true }
         );
@@ -1555,7 +1518,7 @@ module.exports = router;
  */
 router.get('/eligible-relations', verifyToken, checkPermission('member.view'), async (req, res) => {
     try {
-        const { type, gender, excludeId } = req.query;
+        const { type, gender, excludeId, familyId } = req.query; // Added familyId
         let query = {};
 
         switch (type) {
@@ -1593,8 +1556,18 @@ router.get('/eligible-relations', verifyToken, checkPermission('member.view'), a
             query._id = { $ne: excludeId };
         }
 
+        if (familyId && gender) { // Apply familyId and gender filter together
+            query.$and = [
+                { familyId: familyId },
+                { gender: gender }
+            ];
+        } else if (familyId) { // Apply familyId if gender is not specified
+            query.familyId = familyId;
+        }
+
+
         const members = await Member.find(query)
-            .select('_id memberId firstName middleName lastName gender dob maritalStatus city village')
+            .select('_id memberId firstName middleName lastName gender dob maritalStatus city village geography')
             .sort({ firstName: 1 })
             .limit(200)
             .lean();
@@ -1625,25 +1598,18 @@ router.get('/by-pincode/:pincode', verifyToken, checkPermission('member.view'), 
 
         // Add gender filter if provided
         if (gender) {
-            query.$and = [
-                {
-                    $or: [
-                        { 'personal_info.gender': gender },
-                        { 'gender': gender } // Legacy field
-                    ]
-                }
-            ];
+            query.gender = gender; // Use root field 'gender'
         }
 
         // Add marital status filter if provided
         if (marital_status) {
-            query.maritalStatus = marital_status;
+            query.maritalStatus = marital_status; // Use root field 'maritalStatus'
         }
 
         const members = await Member.find(query)
-            .select('memberId personal_info geography firstName middleName lastName gender dob maritalStatus city village')
+            .select('memberId firstName middleName lastName gender dob maritalStatus city village geography') // Removed personal_info, added root fields
             .limit(parseInt(limit))
-            .sort({ 'personal_info.names.first_name': 1, firstName: 1 })
+            .sort({ firstName: 1, lastName: 1 }) // Sorting by root fields
             .lean();
 
         res.json(members);
@@ -1676,7 +1642,7 @@ router.get('/:id/siblings', verifyToken, checkPermission('member.view'), async (
             'lineage_links.parental_union_id': parentalUnionId,
             _id: { $ne: memberId }
         })
-            .select('memberId personal_info firstName lastName gender dob')
+            .select('memberId firstName lastName gender dob')
             .lean();
 
         res.json({ siblings, parental_union_id: parentalUnionId });
@@ -1695,9 +1661,9 @@ router.get('/search/maiden-name/:name', verifyToken, checkPermission('member.vie
         const { limit = 20 } = req.query;
 
         const members = await Member.find({
-            'personal_info.names.maiden_name': new RegExp(name, 'i')
+            maidenName: new RegExp(name, 'i')
         })
-            .select('memberId personal_info geography firstName lastName')
+            .select('memberId geography firstName lastName')
             .limit(parseInt(limit))
             .lean();
 
@@ -1706,4 +1672,69 @@ router.get('/search/maiden-name/:name', verifyToken, checkPermission('member.vie
         res.status(500).json({ error: err.message });
     }
 });
+
+
+// =========================================================
+// HELPER: Auto-Create User for Primary Member
+// =========================================================
+async function ensureUserForPrimaryMember(member) {
+    try {
+        if (!member.isPrimary) return;
+
+        // Check if user already exists linked to this member
+        const existingUser = await User.findOne({ memberId: member.memberId });
+        if (existingUser) {
+            console.log(`[Auto-User] User already exists for Member ${member.memberId}`);
+            return;
+        }
+
+        // Also check by username (Mobile) to prevent duplicates if manual user was created
+        const mobileUsername = member.contact?.mobile?.trim();
+        if (mobileUsername) {
+            const userByMobile = await User.findOne({ username: mobileUsername });
+            if (userByMobile) {
+                console.log(`[Auto-User] User already exists with username ${mobileUsername}`);
+                // Optional: Link this user to the member if not linked?
+                if (!userByMobile.memberId) {
+                    userByMobile.memberId = member.memberId;
+                    await userByMobile.save();
+                    console.log(`[Auto-User] Linked existing user ${mobileUsername} to Member ${member.memberId}`);
+                }
+                return;
+            }
+        }
+
+        console.log(`[Auto-User] Creating new User for Primary Member ${member.memberId}...`);
+
+        // Generate Credentials
+        // Username: Mobile Number (preferred) or MemberID
+        const username = mobileUsername || member.memberId;
+        
+        // Password: Mobile Number (default) or '123456' fallback
+        // In production, maybe generate random and email it? For now, determinisitc for UX.
+        const plainPassword = mobileUsername || '123456';
+        
+        const hashedPassword = await bcrypt.hash(plainPassword, 10);
+
+        const newUser = new User({
+            username: username,
+            password: hashedPassword,
+            name: member.fullName || `${member.firstName} ${member.lastName}`,
+            email: member.contact?.email || undefined,
+            mobile: member.contact?.mobile || undefined,
+            memberId: member.memberId,
+            role: 'Member', // Default Role
+            isVerified: true, // Auto-verified since Admin created the member
+            permissions: []
+        });
+
+        await newUser.save();
+        console.log(`[Auto-User] Successfully created User for Member ${member.memberId} (Username: ${username})`);
+
+    } catch (err) {
+        console.error(`[Auto-User] Failed to create user for member ${member.memberId}:`, err);
+        // Don't block the main flow, just log error
+    }
+}
+
 

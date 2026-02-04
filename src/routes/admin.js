@@ -176,4 +176,40 @@ router.get('/config/permissions', verifyToken, verifyAdmin, (req, res) => {
     res.json(PERMISSIONS);
 });
 
+/**
+ * @swagger
+ * /api/admin/users/{id}:
+ *   delete:
+ *     summary: Delete a user (Admin only)
+ *     tags: [Admin]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: User deleted successfully
+ */
+router.delete('/users/:id', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // Prevent Self-Deletion
+        if (req.user.id === id) {
+            return res.status(400).json({ message: 'You cannot delete yourself.' });
+        }
+
+        const user = await User.findByIdAndDelete(id);
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        res.json({ message: 'User deleted successfully', userId: id });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 module.exports = router;

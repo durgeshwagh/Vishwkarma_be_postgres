@@ -190,16 +190,14 @@ router.post('/login', async (req, res) => {
 
         // Find Linked Member - optimized with lean() and select()
         let linkedMember = null;
-        if (user.email || user.mobile) {
             linkedMember = await Member.findOne({
                 $or: [
                     { email: user.email },
                     { phone: user.mobile }
                 ]
             })
-                .select('memberId firstName lastName email phone')
+                .select('memberId firstName lastName email phone photoUrl')
                 .lean(); // Faster read-only query
-        }
 
         // Special Case: Family ID Login
         if (!linkedMember && user.username.startsWith('F')) {
@@ -208,15 +206,24 @@ router.post('/login', async (req, res) => {
                 gender: 'Male',
                 maritalStatus: 'Married'
             })
-                .select('memberId firstName lastName email phone')
+                .select('memberId firstName lastName email phone photoUrl')
                 .lean();
 
-            // Fallback: Any member in that family
             if (!linkedMember) {
                 linkedMember = await Member.findOne({ familyId: user.username })
-                    .select('memberId firstName lastName email phone')
+                    .select('memberId firstName lastName email phone photoUrl')
                     .lean();
             }
+        }
+
+        // If still not found, use memberId from user record if set
+        if (!linkedMember && user.memberId) {
+            linkedMember = await Member.findOne({
+                $or: [
+                    { _id: user.memberId },
+                    { memberId: user.memberId }
+                ]
+            }).select('memberId firstName lastName email phone photoUrl').lean();
         }
 
         // Determine display name with fallback logic
@@ -243,11 +250,13 @@ router.post('/login', async (req, res) => {
                 email: user.email,
                 permissions: user.permissions,
                 memberId: linkedMember ? linkedMember._id : user.memberId,
+                photoUrl: linkedMember ? linkedMember.photoUrl : null,
                 memberDetails: linkedMember ? {
                     id: linkedMember._id,
                     memberId: linkedMember.memberId,
                     firstName: linkedMember.firstName,
-                    lastName: linkedMember.lastName
+                    lastName: linkedMember.lastName,
+                    photoUrl: linkedMember.photoUrl
                 } : null
             }
         });
@@ -344,14 +353,13 @@ router.post('/verify-otp', async (req, res) => {
         user.otpExpires = undefined;
         await user.save();
 
-        // Find Linked Member - optimized with lean()
         let linkedMember = await Member.findOne({
             $or: [
                 { email: user.email },
                 { phone: user.mobile }
             ]
         })
-            .select('memberId firstName lastName email phone')
+            .select('memberId firstName lastName email phone photoUrl')
             .lean();
 
         // Determine display name with fallback logic
@@ -376,11 +384,13 @@ router.post('/verify-otp', async (req, res) => {
                 email: user.email,
                 permissions: user.permissions,
                 memberId: linkedMember ? linkedMember._id : null,
+                photoUrl: linkedMember ? linkedMember.photoUrl : null,
                 memberDetails: linkedMember ? {
                     id: linkedMember._id,
                     memberId: linkedMember.memberId,
                     firstName: linkedMember.firstName,
-                    lastName: linkedMember.lastName
+                    lastName: linkedMember.lastName,
+                    photoUrl: linkedMember.photoUrl
                 } : null
             }
         });
@@ -456,6 +466,18 @@ router.get('/profile', verifyToken, async (req, res) => {
         const user = await User.findById(req.user.id);
         if (!user) return res.status(404).json({ message: 'User not found' });
         
+        // Fetch linked member for photoUrl
+        let photoUrl = null;
+        if (user.memberId) {
+            const member = await Member.findById(user.memberId).select('photoUrl').lean();
+            if (member) photoUrl = member.photoUrl;
+        } else if (user.email || user.mobile) {
+            const member = await Member.findOne({
+                $or: [{ email: user.email }, { phone: user.mobile }]
+            }).select('photoUrl').lean();
+            if (member) photoUrl = member.photoUrl;
+        }
+
         // Return similar structure to login
         res.json({
             id: user._id,
@@ -464,7 +486,8 @@ router.get('/profile', verifyToken, async (req, res) => {
             role: user.role,
             email: user.email,
             permissions: user.permissions,
-            memberId: user.memberId
+            memberId: user.memberId,
+            photoUrl: photoUrl
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -516,8 +539,8 @@ router.put('/approve-user/:id', async (req, res) => {
 // Admin: Get All Users (Filtered by Role)
 router.get('/users', verifyToken, async (req, res) => {
     try {
-        if (!['SuperAdmin', 'Admin'].includes(req.user.role)) {
-            return res.status(403).json({ message: 'Access Denied' });
+        if (req.user.role !== 'SuperAdmin') {
+            return res.status(403).json({ message: 'Access Denied: Only SuperAdmin can delete users.' });
         }
 
         let query = {};
@@ -540,8 +563,8 @@ router.get('/users', verifyToken, async (req, res) => {
 // Toggle User Status (Enable/Disable)
 router.put('/users/:id/status', verifyToken, async (req, res) => {
     try {
-        if (!['SuperAdmin', 'Admin'].includes(req.user.role)) {
-            return res.status(403).json({ message: 'Access Denied' });
+        if (req.user.role !== 'SuperAdmin') {
+            return res.status(403).json({ message: 'Access Denied: Only SuperAdmin can delete users.' });
         }
 
         const { id } = req.params;
@@ -567,8 +590,8 @@ router.put('/users/:id/status', verifyToken, async (req, res) => {
 // Admin: Update Permissions
 router.put('/users/:id/permissions', verifyToken, async (req, res) => {
     try {
-        if (!['SuperAdmin', 'Admin'].includes(req.user.role)) {
-            return res.status(403).json({ message: 'Access Denied' });
+        if (req.user.role !== 'SuperAdmin') {
+            return res.status(403).json({ message: 'Access Denied: Only SuperAdmin can delete users.' });
         }
         const { id } = req.params;
         const { permissions, role, memberId } = req.body;
@@ -590,8 +613,8 @@ router.put('/users/:id/permissions', verifyToken, async (req, res) => {
 // Admin: Reset Password
 router.put('/users/:id/reset-password', verifyToken, async (req, res) => {
     try {
-        if (!['SuperAdmin', 'Admin'].includes(req.user.role)) {
-            return res.status(403).json({ message: 'Access Denied' });
+        if (req.user.role !== 'SuperAdmin') {
+            return res.status(403).json({ message: 'Access Denied: Only SuperAdmin can delete users.' });
         }
         const { id } = req.params;
         const { password } = req.body;
@@ -614,8 +637,8 @@ router.put('/users/:id/reset-password', verifyToken, async (req, res) => {
 // Admin: Delete User
 router.delete('/users/:id', verifyToken, async (req, res) => {
     try {
-        if (!['SuperAdmin', 'Admin'].includes(req.user.role)) {
-            return res.status(403).json({ message: 'Access Denied' });
+        if (req.user.role !== 'SuperAdmin') {
+            return res.status(403).json({ message: 'Access Denied: Only SuperAdmin can delete users.' });
         }
 
         const { id } = req.params;
@@ -629,6 +652,47 @@ router.delete('/users/:id', verifyToken, async (req, res) => {
         if (!user) return res.status(404).json({ message: 'User not found' });
 
         res.json({ message: 'User deleted successfully', userId: id });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Admin: Bulk Delete Users
+router.post('/users/bulk-delete', verifyToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'SuperAdmin') {
+            return res.status(403).json({ message: 'Access Denied: Only SuperAdmin can delete users.' });
+        }
+
+        const { ids } = req.body;
+
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            return res.status(400).json({ message: 'No users selected for deletion' });
+        }
+
+        // Prevent Self-Deletion in Bulk
+        if (ids.includes(req.user.id)) {
+            return res.status(400).json({ message: 'You cannot delete yourself in a bulk action.' });
+        }
+
+        // If Admin (not SuperAdmin), ensure they only delete users they created (Optional, depending on policy)
+        // For now, assuming Admin has full delete rights over Members as per 'delete user' endpoint logic check
+        // The single delete check is: if (req.user.role === 'Admin' && req.user.id === id) -> Prevent self
+        // It didn't enforce createdBy check in the single delete route I saw earlier (lines 638-658) 
+        // Wait, line 640 checks role. Line 647 checks self.
+        // It DOES NOT check createdBy on line 638. Wait, strict check was on status update?
+        // Let's re-read the single delete route in previous context...
+        // Ah, status update (line 564) had strict check: "if (req.user.role === 'Admin') ... targetUser.createdBy !== req.user.id"
+        // But delete (line 638) did NOT have that check in the file I read.
+        // So I will stick to the same pattern as single delete: Allow if not self.
+
+        const result = await User.deleteMany({ _id: { $in: ids } });
+
+        res.json({ 
+            message: `${result.deletedCount} users deleted successfully`, 
+            deletedCount: result.deletedCount,
+            ids 
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

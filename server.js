@@ -33,19 +33,27 @@ app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// Global Middleware for CORP
+// Global Middleware for CORP & Cache Control
 app.use((req, res, next) => {
     res.header("Cross-Origin-Resource-Policy", "cross-origin");
+    
+    // Disable Caching for API responses
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    
     next();
 });
 
 app.use(compression());
 app.use(cors({
-    origin: ['http://localhost:4200', 'https://www.vishwasetu.co.in'],
+    origin: ['http://localhost:4200', 'http://localhost:8100',
+        'http://localhost:8080','https://www.vishwasetu.co.in'],
     credentials: true
 }));
 
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
 // Swagger Configuration
 // Swagger Configuration

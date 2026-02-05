@@ -48,8 +48,8 @@ router.get('/my-family', verifyToken, async (req, res) => {
         const extendedRelatives = await Member.find({
             familyId: { $ne: currentMember.familyId },
             $or: [
-                { fatherId: { $in: coreIds } },
-                { motherId: { $in: coreIds } }
+                { father: { $in: coreIds } },
+                { mother: { $in: coreIds } }
             ]
         });
 
@@ -231,8 +231,8 @@ router.get('/tree-data/:memberId', verifyToken, async (req, res) => {
         const distinctFamilyDescendants = await Member.find({
             familyId: { $ne: targetMember.familyId },
             $or: [
-                { fatherId: { $in: coreIds } },
-                { motherId: { $in: coreIds } }
+                { father: { $in: coreIds } },
+                { mother: { $in: coreIds } }
             ]
         });
 
@@ -244,8 +244,8 @@ router.get('/tree-data/:memberId', verifyToken, async (req, res) => {
             level2Descendants = await Member.find({
                  familyId: { $ne: targetMember.familyId }, // Optimization
                  $or: [
-                    { fatherId: { $in: descendantsIds } },
-                    { motherId: { $in: descendantsIds } }
+                    { father: { $in: descendantsIds } },
+                    { mother: { $in: descendantsIds } }
                 ]
             });
         }
@@ -263,15 +263,15 @@ router.get('/tree-data/:memberId', verifyToken, async (req, res) => {
         console.log(`Debug Tree: Loaded ${loadedIds.size} IDs. Checking Ancestors for ${targetMember.firstName}...`);
 
         // Check Target's Parents (Crucial for Married Daughter)
-        if (targetMember.fatherId) {
-            const fId = targetMember.fatherId.toString();
+        if (targetMember.father) {
+            const fId = targetMember.father.toString();
             if (!loadedIds.has(fId)) {
                 console.log(`Debug Tree: Fetching missing Father: ${fId}`);
                 parentIdsToFetch.push(fId);
             }
         }
-        if (targetMember.motherId) {
-            const mId = targetMember.motherId.toString();
+        if (targetMember.mother) {
+            const mId = targetMember.mother.toString();
             if (!loadedIds.has(mId)) {
                 console.log(`Debug Tree: Fetching missing Mother: ${mId}`);
                 parentIdsToFetch.push(mId);
@@ -283,8 +283,8 @@ router.get('/tree-data/:memberId', verifyToken, async (req, res) => {
 
         // 3.7 Spouse's Ancestors (For Married Women context)
         // If target is married, we should also try to fetch the spouse's parents if they are not loaded
-        if (targetMember.spouseId) {
-             const spouseIdStr = targetMember.spouseId.toString();
+        if (targetMember.spouse) {
+             const spouseIdStr = targetMember.spouse.toString();
              // We might have the spouse in coreFamily or descendants, but maybe not their parents
              // Let's find the spouse first (if loaded) or fetch if missing? 
              // Usually spouse is in family, but let's be safe.
@@ -294,7 +294,7 @@ router.get('/tree-data/:memberId', verifyToken, async (req, res) => {
              
              if (!spouse) {
                  // Spouse not in loaded set? Fetch them.
-                  spouse = await Member.findById(targetMember.spouseId);
+                  spouse = await Member.findById(targetMember.spouse);
                   if (spouse) {
                       // Add to the list to be returned later? 
                       // actually we merge all later. 
@@ -304,11 +304,11 @@ router.get('/tree-data/:memberId', verifyToken, async (req, res) => {
 
              if (spouse) {
                  const spouseParentIds = [];
-                 if (spouse.fatherId && !loadedIds.has(spouse.fatherId.toString()) && !parentIdsToFetch.includes(spouse.fatherId.toString())) {
-                     spouseParentIds.push(spouse.fatherId);
+                 if (spouse.father && !loadedIds.has(spouse.father.toString()) && !parentIdsToFetch.includes(spouse.father.toString())) {
+                     spouseParentIds.push(spouse.father);
                  }
-                 if (spouse.motherId && !loadedIds.has(spouse.motherId.toString()) && !parentIdsToFetch.includes(spouse.motherId.toString())) {
-                     spouseParentIds.push(spouse.motherId);
+                 if (spouse.mother && !loadedIds.has(spouse.mother.toString()) && !parentIdsToFetch.includes(spouse.mother.toString())) {
+                     spouseParentIds.push(spouse.mother);
                  }
                  
                  if (spouseParentIds.length > 0) {
@@ -396,32 +396,26 @@ router.post('/migrate-marriages', async (req, res) => {
     try {
         console.log('Starting Marriage Migration...');
         const membersWithSpouse = await Member.find({ 
-            spouseId: { $ne: null },
-            // Optional: Filter those who don't have marriage records?
-            // Easier to just upsert all.
+            spouse: { $ne: null }
         });
 
         let count = 0;
         for (const m of membersWithSpouse) {
-            // Check if we have a valid spouse linked
-            // Prevent self-linking or invalid IDs
-            if (!m.spouseId || m.spouseId.toString() === m._id.toString()) continue;
+            if (!m.spouse || m.spouse.toString() === m._id.toString()) continue;
 
             const existingMarriage = await Marriage.findOne({
                 $or: [
-                    { husbandId: m._id, wifeId: m.spouseId },
-                    { husbandId: m.spouseId, wifeId: m._id }
+                    { husbandId: m._id, wifeId: m.spouse },
+                    { husbandId: m.spouse, wifeId: m._id }
                 ]
             });
 
             if (!existingMarriage) {
-                // Determine Husband/Wife based on Gender
-                // Fallback: If gender missing, assume current is Husband if not 'Female'
                 const isMale = m.gender === 'Male';
                 
                 await Marriage.create({
-                    husbandId: isMale ? m._id : m.spouseId,
-                    wifeId: isMale ? m.spouseId : m._id,
+                    husbandId: isMale ? m._id : m.spouse,
+                    wifeId: isMale ? m.spouse : m._id,
                     status: 'Active'
                 });
                 count++;

@@ -1,37 +1,49 @@
 const mongoose = require('mongoose');
 
 const MemberSchema = new mongoose.Schema({
-    memberId: { type: String, required: true, unique: true },
-
-    // Personal Information (Enhanced Structure)
-    personal_info: {
-        names: {
-            first_name: { type: String, required: true },
-            middle_name: { type: String },
-            last_name: { type: String, required: true },
-            prefix: { type: String }, // श्री, सौ, श्रीमती, स्व.
-            maiden_name: { type: String }, // विवाहापूर्वीचे surname (important for search)
-            nickname: { type: String }
-        },
-        dob: { type: Date, required: true },
-        gender: { type: String, enum: ['Male', 'Female'], required: true },
-        life_status: { type: String, enum: ['Alive', 'Deceased'], default: 'Alive' },
-        showOnMatrimony: { type: Boolean, default: true },
-        blood_group: { type: String },
-        biodata: {
-            education: { type: String },
-            height: { type: String },
-            occupation: { type: String },
-            hobbies: [{ type: String }],
-            contact: {
-                mobile: { type: String },
-                email: { type: String },
-                whatsapp: { type: String }
-            }
-        }
+    // ===============================
+    // Core Identity
+    // ===============================
+    memberId: { type: String, required: true, unique: true, index: true },
+    
+    // ===============================
+    // Personal Information (Flattened for Performance)
+    // ===============================
+    firstName: { type: String, required: true },
+    middleName: { type: String },
+    lastName: { type: String, required: true },
+    fullName: { type: String, index: true }, // Pre-calculated: "First Middle Last"
+    prefix: { type: String }, // श्री, सौ, श्रीमती, स्व.
+    gender: { type: String, enum: ['Male', 'Female'], required: true, index: true },
+    dob: { type: Date, required: true },
+    lifeStatus: { type: String, enum: ['Alive', 'Deceased'], default: 'Alive' },
+    maritalStatus: { type: String, enum: ['Single', 'Married', 'Divorced', 'Widowed'], index: true },
+    maidenName: { type: String, index: true },
+    
+    contact: {
+        mobile: { type: String, index: true },
+        email: { type: String },
+        whatsapp: { type: String }
     },
 
-    // Geography (Pincode-based Search)
+    education: { type: String },
+    occupation: { type: String },
+    occupationType: { type: String, enum: ['Job', 'Business', 'Farmer', 'Student', 'Housewife', 'Retired', 'Other', ''] },
+    jobType: { type: String, enum: ['Software Engineer', 'Teacher', 'Government Employee', 'Private Company Employee', 'Doctor', 'Nurse', 'Accountant', 'Clerk', 'Security Guard', 'Driver', 'Other', ''] },
+    photoUrl: { type: String },
+    showOnMatrimony: { type: Boolean, default: false },
+    blood_group: { type: String },
+    height: { type: String },
+    hobbies: [{ type: String }],
+    
+    // ===============================
+    // Geography (Indexed for Search)
+    // ===============================
+    city: { type: String, index: true }, // Syncs with taluka
+    village: { type: String, index: true },
+    state: { type: String, index: true },    // Added top-level index
+    district: { type: String, index: true }, // Added top-level index
+    taluka: { type: String, index: true },   // Added top-level index
     geography: {
         pincode: { type: Number },
         state: { type: String },
@@ -41,199 +53,125 @@ const MemberSchema = new mongoose.Schema({
         full_address: { type: String }
     },
 
-    // Union-based Lineage Links (NEW!)
+    // ===============================
+    // Relationships (Optimized Refs)
+    // ===============================
+    father: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null },
+    mother: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null },
+    spouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null },
+    children: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }],
+    
+    // String MemberIds for easier frontend access (e.g., "M0001")
+    fatherMemberId: { type: String, index: true },
+    motherMemberId: { type: String, index: true },
+    spouseMemberId: { type: String, index: true },
+
+    // ===============================
+    // Family Grouping & Linkage
+    // ===============================
+    familyId: { type: String, index: true },
+    isPrimary: { type: Boolean, default: false },
     lineage_links: {
-        parental_union_id: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: 'Union',
-            description: 'माहेर - Parents union ID'
-        },
-        current_union_id: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: 'Union',
-            description: 'सासर - Own marriage union (for married people)'
-        },
-        // Auto-calculated from unions
-        siblings_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }],
-        children_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }]
+        parental_union_id: { type: String, index: true },
+        immediate_relations: { type: Object },
+        extended_network: { type: Object }
     },
 
-    // Verification System
-    verification_details: {
-        status: {
-            type: String,
-            enum: ['Pending', 'Approved', 'Rejected'],
-            default: 'Pending'
-        },
-        verified_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-        verified_at: { type: Date },
-        is_genuine: { type: Boolean, default: true },
-        rejection_reason: { type: String }
+    // ===============================
+    // Verification & Metadata
+    // ===============================
+    verification: {
+        status: { type: String, enum: ['Pending', 'Approved', 'Rejected'], default: 'Pending' },
+        verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        verifiedAt: { type: Date },
+        rejectionReason: { type: String }
     },
 
-    // Legacy fields (backward compatibility)
-    firstName: { type: String },
-    middleName: { type: String },
-    lastName: { type: String },
-    gender: { type: String },
-    dob: { type: Date },
-    maritalStatus: { type: String },
-    occupation: { type: String },
-    email: { type: String },
-    phone: { type: String },
-    address: { type: String },
-    state: { type: String },
-    district: { type: String },
-    city: { type: String },
-    village: { type: String },
-    photoUrl: { type: String },
-    spousePhotoUrl: { type: String },
-    spouseLastName: { type: String },
-    spouseMiddleName: { type: String },
-    spouseName: { type: String },
-    spousePrefix: { type: String }, // Prefix for spouse
-    spouseFullName: { type: String }, // Pre-calculated Spouse Full Name
-    fullName: { type: String }, // Pre-calculated First + Middle + Last
-    stateName: { type: String }, // Pre-resolved state name
-    districtName: { type: String }, // Pre-resolved district name
-    talukaName: { type: String }, // Pre-resolved taluka name
-    villageName: { type: String }, // Pre-resolved village name
-    education: { type: String },
-    occupationType: { type: String }, // Job, Business, etc.
-    spouseEducation: { type: String },
-    spouseOccupation: { type: String },
-    spouseOccupationType: { type: String },
-    height: { type: String },
-    prefix: { type: String }, // Pre-calculated or separate prefix
-    lifeStatus: { type: String, enum: ['Alive', 'Deceased'], default: 'Alive' },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 
-    // Relationships (Legacy - Maintained for Backward Compatibility)
-    familyId: { type: String, default: 'FNew' },
-    fatherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null },
-    motherId: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null },
-    spouseId: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null },
-    isPrimary: { type: Boolean, default: false }, // Head of Family
-
-    // Enhanced Family Lineage Links (New Structure)
-    family_lineage_links: {
-        // Immediate Relations
-        immediate_relations: {
-            father_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null },
-            mother_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null },
-            spouse_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null },
-            siblings_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }],
-            children_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }]
-        },
-
-        // Extended Network
-        extended_network: {
-            // Paternal Relations (Pita Paksha)
-            paternal: {
-                dada_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null }, // Paternal Grandfather
-                dadi_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null }, // Paternal Grandmother
-                kaka_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }], // Paternal Uncles (Father's brothers)
-                kaki_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }], // Paternal Aunts (Kaka's wives)
-                bua_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }], // Paternal Aunts (Father's sisters)
-                fufa_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }] // Bua's husbands
-            },
-
-            // Maternal Relations (Matru Paksha)
-            maternal: {
-                nana_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null }, // Maternal Grandfather
-                nani_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null }, // Maternal Grandmother
-                mama_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }], // Maternal Uncles (Mother's brothers)
-                mami_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }], // Mama's wives
-                mausi_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }], // Maternal Aunts (Mother's sisters)
-                mausa_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }] // Mausi's husbands
-            },
-
-            // In-Laws (Sasural)
-            in_laws: {
-                father_in_law_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null }, // Sasur
-                mother_in_law_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null }, // Saas
-                jija_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }], // Sister's husband
-                saala_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }], // Wife's brother
-                saali_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }] // Wife's sister
-            }
-        }
-    },
-
-    // Metadata
-    meta_data: {
-        created_at: { type: Date, default: Date.now },
-        updated_at: { type: Date, default: Date.now }
-    }
+    // ===============================
+    // Legacy Compatibility (Hidden/Internal)
+    // ===============================
+    personal_info: { type: Object } // Store old nested data if migration is pending
 }, {
     timestamps: true,
     toJSON: { virtuals: true },
-    toObject: { virtuals: true }
+    toObject: { virtuals: true },
+    versionKey: false
 });
 
-// Note: fullName is stored as a pre-calculated field (line 92), not a virtual
 // Virtual for age calculation
 MemberSchema.virtual('age').get(function () {
     if (!this.dob) return null;
-    return Math.floor((Date.now() - this.dob) / (365.25 * 24 * 60 * 60 * 1000));
+    return Math.floor((Date.now() - new Date(this.dob)) / (31557600000));
 });
 
-// Virtual for showOnMatrimony (Alias to personal_info.showOnMatrimony)
-MemberSchema.virtual('showOnMatrimony')
-    .get(function () {
-        return this.personal_info && this.personal_info.showOnMatrimony;
-    })
-    .set(function (v) {
-        if (!this.personal_info) this.personal_info = {};
-        this.personal_info.showOnMatrimony = v;
-    });
+// Legacy Compatibility Virtuals (for frontend support)
+MemberSchema.virtual('fatherId').get(function() { return this.father; });
+MemberSchema.virtual('motherId').get(function() { return this.mother; });
+MemberSchema.virtual('spouseId').get(function() { return this.spouse; });
 
-// Indexes for optimized searching and filtering
-// Compound Text Index for fast full-text search across multiple fields
+// ---------------------------------------------------------
+// PERFORMANCE INDEXES
+// ---------------------------------------------------------
+
+// Compound Index for List/Table Filtering (Primary Search Patterns)
+MemberSchema.index({ familyId: 1, isPrimary: -1 });
+MemberSchema.index({ lifeStatus: 1, gender: 1, maritalStatus: 1 });
+
+// Compound Index for Geography Filtering
+MemberSchema.index({ 'geography.state': 1, 'geography.district': 1, 'geography.taluka': 1 });
+MemberSchema.index({ 'geography.pincode': 1 });
+
+// Optimized Matrimony Search Index (Partial)
+MemberSchema.index(
+    { showOnMatrimony: 1, gender: 1, maritalStatus: 1 },
+    { partialFilterExpression: { showOnMatrimony: true, lifeStatus: 'Alive' } }
+);
+
+// Indexes for relationship traversals (Recursive trees)
+MemberSchema.index({ father: 1 });
+MemberSchema.index({ mother: 1 });
+MemberSchema.index({ spouse: 1 });
+
+// Full-Text Search Index (For Global Search Bar)
 MemberSchema.index({
+    fullName: 'text',
     firstName: 'text',
     lastName: 'text',
-    middleName: 'text',
-    occupation: 'text',
-    city: 'text',
     village: 'text',
-    memberId: 'text',
-    phone: 'text',
-    spouseMiddleName: 'text',
-    fullName: 'text' 
+    city: 'text',
+    taluka: 'text',
+    'contact.mobile': 'text',
+    memberId: 'text'
+}, {
+    weights: {
+        fullName: 15,
+        firstName: 10,
+        lastName: 10,
+        memberId: 5,
+        village: 3,
+        city: 3,
+        taluka: 3,
+        'contact.mobile': 5
+    },
+    name: 'GlobalSearchIndex',
+    default_language: 'none' // Improves support for non-English (Marathi) characters by not using a specific language's stop words/stemming
 });
 
-// Optimized Sort Indexes
-MemberSchema.index({ isPrimary: 1, createdAt: -1 }); // Primary List
-MemberSchema.index({ createdAt: -1 });
-MemberSchema.index({ isPrimary: 1 });
-
-// Performance Optimization Indexes (for member list page)
-MemberSchema.index({ firstName: 1, lastName: 1 }); // Name search and sorting
-MemberSchema.index({ fullName: 1 }); // Added index for $or search compatibility
-MemberSchema.index({ city: 1 }); // Location filtering
-MemberSchema.index({ phone: 1 }); // Phone search
-MemberSchema.index({ familyId: 1, isPrimary: 1 }); // Family queries with primary status
-MemberSchema.index({ familyId: 1, createdAt: 1 }); // Family timeline/tree queries
-
-// Relationship Indexes for fast lookups
-MemberSchema.index({ 'family_lineage_links.immediate_relations.father_id': 1 });
-MemberSchema.index({ 'family_lineage_links.immediate_relations.mother_id': 1 });
-MemberSchema.index({ 'family_lineage_links.immediate_relations.spouse_id': 1 });
-MemberSchema.index({ 'family_lineage_links.extended_network.paternal.dada_id': 1 });
-MemberSchema.index({ 'family_lineage_links.extended_network.maternal.nana_id': 1 });
-
-// Compound index for pagination optimization (cursor-based)
-MemberSchema.index({ createdAt: -1, _id: 1 });
-
-// ============================================
-// Dashboard-specific Indexes (NEW)
-// ============================================
-// For gender count queries in dashboard stats
-MemberSchema.index({ gender: 1 });
-
-// For matrimony eligible members query (unmarried members by age)
-MemberSchema.index({ gender: 1, maritalStatus: 1, dob: 1 });
-
-// For unique family count
-MemberSchema.index({ familyId: 1 });
+// Pre-save hook to ensure fullName and top-level geo fields are always accurate
+MemberSchema.pre('save', async function() {
+    if (this.firstName && this.lastName) {
+        const p = this.prefix ? this.prefix + ' ' : '';
+        const m = this.middleName ? this.middleName + ' ' : '';
+        this.fullName = `${p}${this.firstName} ${m}${this.lastName}`.replace(/\s+/g, ' ').trim();
+    }
+    
+    // Sync Geography shortcut fields
+    if (this.geography) {
+        if (!this.city) this.city = this.geography.taluka || this.geography.city;
+        if (!this.village) this.village = this.geography.village;
+    }
+});
 
 module.exports = mongoose.model('Member', MemberSchema);

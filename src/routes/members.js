@@ -562,10 +562,10 @@ async function handleBulkSave(req, res) {
             }
             
             // 2. Inherit/Set Family Context
-            // Treat 'FNew' as invalid - generate a proper ID
-            if (context.familyId && context.familyId !== 'FNew') {
+            // Treat 'FNew' and 'Unassigned' as invalid - generate a proper ID
+            if (context.familyId && context.familyId !== 'FNew' && context.familyId !== 'Unassigned') {
                 data.familyId = context.familyId;
-            } else if (!data.familyId || data.familyId === 'FNew') {
+            } else if (!data.familyId || data.familyId === 'FNew' || data.familyId === 'Unassigned') {
                 if (!generatedFamilyId) generatedFamilyId = getNextFamilyId();
                 data.familyId = generatedFamilyId;
             }
@@ -663,8 +663,8 @@ async function handleBulkSave(req, res) {
         }
 
         // Start recursion from the main member
-        // Pass familyId only if it's a valid ID (not 'FNew')
-        const initialFamilyId = (payload.member.familyId && payload.member.familyId !== 'FNew') 
+        // Pass familyId only if it's a valid ID (not 'FNew' or 'Unassigned')
+        const initialFamilyId = (payload.member.familyId && payload.member.familyId !== 'FNew' && payload.member.familyId !== 'Unassigned') 
             ? payload.member.familyId : null;
         await processRecursive(payload.member, { familyId: initialFamilyId });
 

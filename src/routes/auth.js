@@ -269,7 +269,7 @@ router.post('/login', async (req, res) => {
                     { phone: user.mobile }
                 ]
             })
-                .select('memberId firstName lastName email phone photoUrl')
+                .select('memberId firstName lastName email phone photoUrl familyId')
                 .lean(); // Faster read-only query
 
         // Special Case: Family ID Login
@@ -279,12 +279,12 @@ router.post('/login', async (req, res) => {
                 gender: 'Male',
                 maritalStatus: 'Married'
             })
-                .select('memberId firstName lastName email phone photoUrl')
+                .select('memberId firstName lastName email phone photoUrl familyId')
                 .lean();
 
             if (!linkedMember) {
                 linkedMember = await Member.findOne({ familyId: user.username })
-                    .select('memberId firstName lastName email phone photoUrl')
+                    .select('memberId firstName lastName email phone photoUrl familyId')
                     .lean();
             }
         }
@@ -296,7 +296,7 @@ router.post('/login', async (req, res) => {
                     { _id: user.memberId },
                     { memberId: user.memberId }
                 ]
-            }).select('memberId firstName lastName email phone photoUrl').lean();
+            }).select('memberId firstName lastName email phone photoUrl familyId').lean();
         }
 
         // Determine display name with fallback logic
@@ -327,6 +327,7 @@ router.post('/login', async (req, res) => {
                 memberDetails: linkedMember ? {
                     id: linkedMember._id,
                     memberId: linkedMember.memberId,
+                    familyId: linkedMember.familyId,
                     firstName: linkedMember.firstName,
                     lastName: linkedMember.lastName,
                     photoUrl: linkedMember.photoUrl

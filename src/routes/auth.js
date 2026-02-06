@@ -567,16 +567,24 @@ router.get('/profile', verifyToken, async (req, res) => {
         const user = await User.findById(req.user.id);
         if (!user) return res.status(404).json({ message: 'User not found' });
         
-        // Fetch linked member for photoUrl
+        // Fetch linked member for photoUrl and familyId
         let photoUrl = null;
+        let familyId = null;
+
         if (user.memberId) {
-            const member = await Member.findById(user.memberId).select('photoUrl').lean();
-            if (member) photoUrl = member.photoUrl;
+            const member = await Member.findById(user.memberId).select('photoUrl familyId').lean();
+            if (member) {
+                photoUrl = member.photoUrl;
+                familyId = member.familyId;
+            }
         } else if (user.email || user.mobile) {
             const member = await Member.findOne({
                 $or: [{ email: user.email }, { phone: user.mobile }]
-            }).select('photoUrl').lean();
-            if (member) photoUrl = member.photoUrl;
+            }).select('photoUrl familyId').lean();
+            if (member) {
+                photoUrl = member.photoUrl;
+                familyId = member.familyId;
+            }
         }
 
         // Return similar structure to login
@@ -588,6 +596,7 @@ router.get('/profile', verifyToken, async (req, res) => {
             email: user.email,
             permissions: user.permissions,
             memberId: user.memberId,
+            familyId: familyId,
             photoUrl: photoUrl
         });
     } catch (err) {

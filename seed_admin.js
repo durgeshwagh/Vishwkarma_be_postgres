@@ -11,33 +11,22 @@ const seedAdmin = async () => {
         await mongoose.connect(MONGO_URI);
         console.log('Connected to MongoDB');
 
-        const username = 'admin';
-        const passwordRaw = 'admin123';
-        const hashedPassword = await bcrypt.hash(passwordRaw, 10);
+        const username = 'durgeshwagh';
+        const passwordRaw = 'Durgesh@123'; // Optional: Reset password if needed, or keep existing if only promoting
+        // const hashedPassword = await bcrypt.hash(passwordRaw, 10);
 
         // Check if exists
         const exists = await User.findOne({ username });
         if (exists) {
-            console.log('Admin user already exists. Updating password and permissions...');
-            exists.password = hashedPassword;
+            console.log(`User ${username} found. Promoting to SuperAdmin...`);
+            // exists.password = hashedPassword; // Uncomment to reset password
             exists.role = 'SuperAdmin';
             exists.isVerified = true;
-            exists.permissions = ['create', 'read', 'update', 'delete', 'verify_users'];
+            exists.permissions = ['create', 'read', 'update', 'delete', 'verify_users', 'manage_funds', 'manage_notices'];
             await exists.save();
-            console.log('Admin user updated.');
+            console.log(`User ${username} successfully promoted to SuperAdmin.`);
         } else {
-            console.log('Creating new Admin user...');
-            const newAdmin = new User({
-                username,
-                password: hashedPassword,
-                role: 'SuperAdmin',
-                isVerified: true,
-                email: 'admin@example.com',
-                name: 'System Admin',
-                permissions: ['create', 'read', 'update', 'delete', 'verify_users']
-            });
-            await newAdmin.save();
-            console.log('Admin user created.');
+            console.log(`User ${username} NOT found. Please register first or check spelling.`);
         }
 
     } catch (e) {

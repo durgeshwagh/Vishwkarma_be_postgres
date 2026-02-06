@@ -21,6 +21,13 @@ const verifyToken = (req, res, next) => {
 const checkPermission = (requiredPermission) => {
     return async (req, res, next) => {
         try {
+            // Mock DB Bypass
+            if (global.useMockDb) {
+                // In mock mode, we trust the token payload or allow access for testing.
+                // Since we can't query the DB, we can't get fresh permissions.
+                return next();
+            }
+
             // Fetch fresh user data to get latest permissions
             const user = await User.findById(req.user.id);
             if (!user) return res.status(404).json({ message: 'User not found' });

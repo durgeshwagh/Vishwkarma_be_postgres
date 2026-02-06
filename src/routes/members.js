@@ -122,10 +122,14 @@ router.get('/', verifyToken, checkPermission('member.view'), async (req, res) =>
         const limit = limitParam === '0' ? 0 : (parseInt(limitParam) || 20);
 
         let query = {};
+        const andConditions = [];
         
-        // 1. Life Status Filter
+        // 1. Life Status Filter (Default: Hide Deceased AND Swa./Late prefixes)
         if (!showDeceased || showDeceased.toString().toLowerCase() !== 'true') {
-            query.lifeStatus = { $ne: 'Deceased' };
+            andConditions.push({ lifeStatus: { $ne: 'Deceased' } });
+            andConditions.push({ prefix: { $ne: 'स्व.' } }); // Hindi Swa.
+            andConditions.push({ prefix: { $not: /Late/i } });
+            andConditions.push({ prefix: { $not: /^Swa/i } });
         }
 
         // 2. Explicit Filters
@@ -136,8 +140,6 @@ router.get('/', verifyToken, checkPermission('member.view'), async (req, res) =>
         if (familyId) query.familyId = familyId;
         if (req.query.fatherId) query.father = req.query.fatherId;
         if (req.query.motherId) query.mother = req.query.motherId;
-
-        const andConditions = [];
 
         // 3. Search Query (Optimized with $text)
         if (search && search.trim()) {
@@ -1278,6 +1280,16 @@ router.get('/stats/dashboard', verifyToken, checkPermission('member.view'), asyn
         const lastWeek = new Date(new Date().setDate(now.getDate() - 7));
         const today = new Date();
 
+        // Defined Alive Filter (Strict: No Deceased, No Swa./Late prefix)
+        const aliveQuery = { 
+            $and: [
+                { lifeStatus: { $ne: 'Deceased' } },
+                { prefix: { $ne: 'स्व.' } },
+                { prefix: { $not: /Late/i } },
+                { prefix: { $not: /^Swa/i } }
+            ]
+        };
+
         // Execution
         const [
             // 1. Basic Counts (Alive Only for directory population)
@@ -1315,30 +1327,30 @@ router.get('/stats/dashboard', verifyToken, checkPermission('member.view'), asyn
             upcomingEvents
         ] = await Promise.all([
             // Basic Counts (ALIVE ONLY)
-            Member.countDocuments({ lifeStatus: { $ne: 'Deceased' } }),
-            Member.countDocuments({ gender: 'Male', lifeStatus: { $ne: 'Deceased' } }),
-            Member.countDocuments({ gender: 'Female', lifeStatus: { $ne: 'Deceased' } }),
-            Member.countDocuments({ maritalStatus: 'Married', lifeStatus: { $ne: 'Deceased' } }),
-            Member.countDocuments({ gender: 'Male', maritalStatus: 'Single', lifeStatus: { $ne: 'Deceased' } }),
-            Member.countDocuments({ gender: 'Female', maritalStatus: 'Single', lifeStatus: { $ne: 'Deceased' } }),
-            Member.countDocuments({ isPrimary: true, lifeStatus: { $ne: 'Deceased' } }),
+            Member.countDocuments(aliveQuery),
+            Member.countDocuments({ ...aliveQuery, gender: 'Male' }),
+            Member.countDocuments({ ...aliveQuery, gender: 'Female' }),
+            Member.countDocuments({ ...aliveQuery, maritalStatus: 'Married' }),
+            Member.countDocuments({ ...aliveQuery, gender: 'Male', maritalStatus: 'Single' }),
+            Member.countDocuments({ ...aliveQuery, gender: 'Female', maritalStatus: 'Single' }),
+            Member.countDocuments({ ...aliveQuery, isPrimary: true }),
 
             // Weekly Stats (ALIVE ONLY)
-            Member.countDocuments({ createdAt: { $gte: lastWeek }, lifeStatus: { $ne: 'Deceased' } }),
-            Member.countDocuments({ gender: 'Male', createdAt: { $gte: lastWeek }, lifeStatus: { $ne: 'Deceased' } }),
-            Member.countDocuments({ gender: 'Female', createdAt: { $gte: lastWeek }, lifeStatus: { $ne: 'Deceased' } }),
-            Member.countDocuments({ maritalStatus: 'Married', createdAt: { $gte: lastWeek }, lifeStatus: { $ne: 'Deceased' } }),
+            Member.countDocuments({ ...aliveQuery, createdAt: { $gte: lastWeek } }),
+            Member.countDocuments({ ...aliveQuery, gender: 'Male', createdAt: { $gte: lastWeek } }),
+            Member.countDocuments({ ...aliveQuery, gender: 'Female', createdAt: { $gte: lastWeek } }),
+            Member.countDocuments({ ...aliveQuery, maritalStatus: 'Married', createdAt: { $gte: lastWeek } }),
 
             // Distinct Families
             Member.aggregate([
-                { $match: { lifeStatus: { $ne: 'Deceased' } } },
+                { $match: aliveQuery },
                 { $group: { _id: "$familyId" } },
                 { $count: "count" }
             ]).catch(() => []),
 
             // Education by Gender (ALIVE ONLY)
             Member.aggregate([
-                { $match: { education: { $exists: true, $ne: "" }, lifeStatus: { $ne: 'Deceased' } } },
+                { $match: { ...aliveQuery, education: { $exists: true, $ne: "" } } },
                 {
                     $addFields: {
                         eduCategory: {
@@ -1369,7 +1381,7 @@ router.get('/stats/dashboard', verifyToken, checkPermission('member.view'), asyn
 
             // Revised Age Distribution (ALIVE ONLY)
             Member.aggregate([
-                { $match: { dob: { $exists: true, $ne: null }, lifeStatus: { $ne: 'Deceased' } } },
+                { $match: { ...aliveQuery, dob: { $exists: true, $ne: null } } },
                 {
                     $project: {
                         age: {
@@ -1389,13 +1401,13 @@ router.get('/stats/dashboard', verifyToken, checkPermission('member.view'), asyn
 
             // Marital Stats (ALIVE ONLY)
             Member.aggregate([
-                { $match: { lifeStatus: { $ne: 'Deceased' } } },
+                { $match: aliveQuery },
                 { $group: { _id: "$maritalStatus", count: { $sum: 1 } } }
             ]).catch(() => []),
 
             // District Distribution (ALIVE ONLY) - Use districtName for display
             Member.aggregate([
-                { $match: { districtName: { $exists: true, $ne: "" }, lifeStatus: { $ne: 'Deceased' } } },
+                { $match: { ...aliveQuery, districtName: { $exists: true, $ne: "" } } },
                 { $group: { _id: "$districtName", count: { $sum: 1 } } },
                 { $sort: { count: -1 } },
                 { $limit: 5 }
@@ -1403,14 +1415,14 @@ router.get('/stats/dashboard', verifyToken, checkPermission('member.view'), asyn
 
             // Occupation Distribution (ALIVE ONLY)
             Member.aggregate([
-                { $match: { occupationType: { $exists: true, $ne: "" }, lifeStatus: { $ne: 'Deceased' } } },
+                { $match: { ...aliveQuery, occupationType: { $exists: true, $ne: "" } } },
                 { $group: { _id: "$occupationType", count: { $sum: 1 } } },
                 { $sort: { count: -1 } }
             ]).catch(() => []),
 
             // Blood Group Distribution (ALIVE ONLY)
             Member.aggregate([
-                { $match: { blood_group: { $exists: true, $ne: "" }, lifeStatus: { $ne: 'Deceased' } } },
+                { $match: { ...aliveQuery, blood_group: { $exists: true, $ne: "" } } },
                 { $group: { _id: "$blood_group", count: { $sum: 1 } } },
                 { $sort: { count: -1 } }
             ]).catch(() => []),
@@ -1419,7 +1431,7 @@ router.get('/stats/dashboard', verifyToken, checkPermission('member.view'), asyn
             Promise.resolve([]), 
 
             // Recent Members (Alive Only)
-            Member.find({ lifeStatus: { $ne: 'Deceased' } })
+            Member.find(aliveQuery)
                 .sort({ createdAt: -1 })
                 .limit(5)
                 .select('firstName lastName memberId gender city maritalStatus dob photoUrl education phone')

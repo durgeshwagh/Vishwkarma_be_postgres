@@ -4,6 +4,7 @@ const NoticeSchema = new mongoose.Schema({
     title: { type: String, required: true },
     message: { type: String, required: true },
     fileUrl: { type: String }, // Optional attachment (Patrika/Image)
+    fileId: { type: String }, // Cloudinary Public ID
     type: {
         type: String,
         enum: ['General', 'Event', 'Urgent'],

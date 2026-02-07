@@ -35,6 +35,7 @@ app.use(helmet({
 
 // Global Middleware for CORP & Cache Control
 app.use((req, res, next) => {
+    console.log(`[REQUEST] ${req.method} ${req.url} - Content-Type: ${req.headers['content-type']}`);
     res.header("Cross-Origin-Resource-Policy", "cross-origin");
     
     // Disable Caching for API responses

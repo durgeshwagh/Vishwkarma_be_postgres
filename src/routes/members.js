@@ -4,7 +4,7 @@ const Marriage = require('../models/Marriage');
 const User = require('../models/User'); // Added for Auto-User Creation
 const bcrypt = require('bcryptjs');     // Added for Password Hashing
 const { verifyToken, checkPermission } = require('../middleware/authMiddleware');
-const multer = require('multer');
+const { upload, uploadBase64 } = require('../config/cloudinary');
 const path = require('path');
 const cacheService = require('../services/cache.service');
 const router = express.Router();
@@ -53,16 +53,11 @@ const router = express.Router();
  *         maritalStatus: Single
  */
 
-// Multer Configuration (Memory Storage for Serverless/Vercel compatibility)
-const storage = multer.memoryStorage();
-
-const upload = multer({ 
-    storage: storage,
-    limits: { fileSize: 10 * 1024 * 1024 } // 10MB
-});
+// Multer Configuration imported from ../config/cloudinary.js
 
 // Wrapper to handle Multer errors
 const uploadMiddleware = (fields) => (req, res, next) => {
+    console.log(`[UploadMiddleware] Starting upload for fields: ${JSON.stringify(fields)}`);
     const uploadStep = upload.fields(fields);
     uploadStep(req, res, (err) => {
         if (err instanceof multer.MulterError) {
@@ -74,6 +69,7 @@ const uploadMiddleware = (fields) => (req, res, next) => {
             console.error('[Upload Error]', err);
             return res.status(500).json({ message: 'Unknown Upload Error: ' + err.message });
         }
+        console.log('[UploadMiddleware] Upload successful or no files.');
         // Everything went fine.
         next();
     });
@@ -449,7 +445,7 @@ router.get('/:id/profile-optimized', verifyToken, async (req, res) => {
  *     security:
  *       - bearerAuth: []
  */
-router.put('/bulk-save', verifyToken, checkPermission('member.update'), handleBulkSave);
+router.put('/bulk-save', verifyToken, checkPermission('member.update'), upload.any(), handleBulkSave);
 
 /**
  * @swagger
@@ -460,7 +456,7 @@ router.put('/bulk-save', verifyToken, checkPermission('member.update'), handleBu
  *     security:
  *       - bearerAuth: []
  */
-router.post('/bulk-save', verifyToken, checkPermission('member.create'), handleBulkSave);
+router.post('/bulk-save', verifyToken, checkPermission('member.create'), upload.any(), handleBulkSave);
 
 /**
  * @swagger
@@ -504,8 +500,103 @@ async function handleBulkSave(req, res) {
     session.startTransaction();
 
     try {
-        const payload = req.body;
-        console.log('[DEBUG] bulk-save payload:', JSON.stringify(payload, null, 2));
+        let payload = req.body;
+        
+        // Handle Multipart/Form-Data (if 'data' field exists)
+        if (req.body.data) {
+            try {
+                payload = JSON.parse(req.body.data);
+            } catch (e) {
+                console.error('Failed to parse req.body.data JSON:', e);
+                return res.status(400).json({ message: 'Invalid JSON data in form payload' });
+            }
+        }
+
+        console.log('[DEBUG] bulk-save payload members:', payload.member ? payload.member.firstName : 'Unknown');
+
+        // MAP UPLOADED FILES TO PAYLOAD
+        if (req.files && req.files.length > 0) {
+            console.log(`[Upload] Processing ${req.files.length} uploaded files...`);
+            req.files.forEach(f => console.log(`[Upload] File field: ${f.fieldname}, Size: ${f.size}, Path: ${f.path}`));
+            
+            req.files.forEach(file => {
+                const url = file.path;
+                const publicId = file.filename;
+                const fieldName = file.fieldname;
+
+                if (fieldName === 'member_photo') {
+                    if (payload.member) {
+                        payload.member.photoUrl = url;
+                        payload.member.photoId = publicId;
+                        console.log(`[Upload] Mapped member_photo to payload.member.photoUrl: ${url}`);
+                    }
+                    if (payload.member && payload.member.spouse) {
+                        payload.member.spouse.photoUrl = url;
+                        payload.member.spouse.photoId = publicId;
+                        console.log(`[Upload] Mapped spouse_photo -> ${url}`);
+                    }
+                } else if (fieldName.startsWith('child_')) {
+                    // formats: child_i_photo OR child_spouse_i_photo
+                    // wait, my frontend logic was: child_i_photo AND child_spouse_i_photo
+                    // AND grand children: gc_i_j_photo
+                    
+                    if (fieldName.includes('child_spouse_')) {
+                        // child_spouse_0_photo
+                        const parts = fieldName.split('_'); // ['child', 'spouse', '0', 'photo']
+                        const index = parseInt(parts[2], 10);
+                        if (payload.member.children && payload.member.children[index]) {
+                            // Spouse is usually part of child object in flat structure or nested?
+                            // In buildNestedPayload: childMember.spouse = ...
+                            if (payload.member.children[index].spouse) {
+                                payload.member.children[index].spouse.photoUrl = url;
+                                payload.member.children[index].spouse.photoId = publicId;
+                            }
+                        }
+                    } else if (fieldName.match(/^child_\d+_photo$/)) {
+                        // child_0_photo
+                        const parts = fieldName.split('_'); // ['child', '0', 'photo']
+                        const index = parseInt(parts[1], 10);
+                        if (payload.member.children && payload.member.children[index]) {
+                            payload.member.children[index].photoUrl = url;
+                            payload.member.children[index].photoId = publicId;
+                        }
+                    }
+                } else if (fieldName.startsWith('gc_')) {
+                    // gc_i_j_photo OR gc_spouse_i_j_photo
+                    if (fieldName.includes('gc_spouse_')) {
+                         const parts = fieldName.split('_'); // ['gc', 'spouse', '0', '0', 'photo']
+                         const childIdx = parseInt(parts[2], 10);
+                         const gcIdx = parseInt(parts[3], 10);
+                         
+                         if (payload.member.children && payload.member.children[childIdx] && 
+                             payload.member.children[childIdx].children && 
+                             payload.member.children[childIdx].children[gcIdx]) {
+                                 
+                             const gc = payload.member.children[childIdx].children[gcIdx];
+                             if (gc.spouse) {
+                                 gc.spouse.photoUrl = url;
+                                 gc.spouse.photoId = publicId;
+                             }
+                         }
+                    } else {
+                        // gc_i_j_photo
+                        const parts = fieldName.split('_'); // ['gc', '0', '0', 'photo']
+                        const childIdx = parseInt(parts[1], 10);
+                        const gcIdx = parseInt(parts[2], 10);
+                        
+                        if (payload.member.children && payload.member.children[childIdx] && 
+                             payload.member.children[childIdx].children && 
+                             payload.member.children[childIdx].children[gcIdx]) {
+                            
+                             const gc = payload.member.children[childIdx].children[gcIdx];
+                             gc.photoUrl = url;
+                             gc.photoId = publicId;
+                        }
+                    }
+                }
+            });
+        }
+
         const allToUpsert = [];
         const marriages = [];
 
@@ -534,8 +625,10 @@ async function handleBulkSave(req, res) {
 
         async function processRecursive(node, context = {}) {
             if (!node) return null;
+            
+            // Base64 logic removed. Frontend now uploads directly to Cloudinary and sends URLs.
 
-            // 1. Map to Optimized Structure
+            // 1. Map to Optimized Structure of Current Node
             const data = mapFlatToOptimized(node);
             console.log(`[DEBUG] mapped node: ${data.firstName}, memberId: ${data.memberId}, _id: ${data._id}`);
             if (!data._id) data._id = node._id || new mongoose.Types.ObjectId();
@@ -583,6 +676,8 @@ async function handleBulkSave(req, res) {
 
             // 3. Handle Spouse of this node
             if (node.spouse) {
+                // Base64 logic removed for Spouse.
+
                 const sData = mapFlatToOptimized(node.spouse);
                 if (!sData._id) sData._id = node.spouse._id || new mongoose.Types.ObjectId();
                 if (!sData.memberId) sData.memberId = getNextMemberId(); // Use counter-based ID
@@ -721,21 +816,6 @@ async function handleBulkSave(req, res) {
         }
 
 
-        // ---------------------------------------------------------
-        // AUTO-CREATE USER FOR PRIMARY MEMBERS (AND SPOUSES IF PRIMARY)
-        // ---------------------------------------------------------
-        // We do this AFTER the transaction ensures Member existence
-        console.log('[Bulk Save] Checking for Auto-User Creation...');
-        for (const mData of allToUpsert) {
-             // We need the saved member from DB to be sure of ID/MemberID
-             // Since we upserted, we can fetch or just try to use the mData if it has _id
-             if (mData.isPrimary && mData.memberId) {
-                 const recentMember = await Member.findOne({ memberId: mData.memberId });
-                 if (recentMember) {
-                     await ensureUserForPrimaryMember(recentMember);
-                 }
-             }
-        }
 
         res.status(200).json({ 
             message: 'Family branch saved successfully', 
@@ -793,6 +873,7 @@ function mapFlatToOptimized(payload) {
         occupation: clean(payload.occupation),
         occupationType: payload.occupationType,
         photoUrl: payload.photoUrl,
+        photoId: payload.photoId, // Save Cloudinary Public ID
         showOnMatrimony: String(payload.showOnMatrimony) === 'true',
         blood_group: payload.blood_group,
         height: clean(payload.height),
@@ -1016,20 +1097,27 @@ async function upsertMemberRecursive(memberData, context = {}) {
  *       201:
  *         description: Member created
  */
-router.post('/', verifyToken, checkPermission('member.create'), uploadMiddleware([{ name: 'photo', maxCount: 1 }, { name: 'spousePhoto', maxCount: 1 }]), async (req, res) => {
+// Create New Member with robust upload handling
+router.post('/', verifyToken, checkPermission('member.create'), upload.any(), async (req, res) => {
     try {
         const payload = req.body;
 
-        // Handle File Uploads
-        if (req.files) {
-            if (req.files['photo']) {
-                const file = req.files['photo'][0];
-                payload.photoUrl = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
-            }
-            if (req.files['spousePhoto']) {
-                const file = req.files['spousePhoto'][0];
-                payload.spousePhotoUrl = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
-            }
+        // Handle Cloudinary File Uploads (upload.any() produces array in req.files)
+        if (req.files && Array.isArray(req.files) && req.files.length > 0) {
+            console.log(`[POST /] Files received: ${req.files.length}`);
+            req.files.forEach(f => {
+                if (f.fieldname === 'photo') {
+                    payload.photoUrl = f.path;
+                    payload.photoId = f.filename; // Capture Public ID
+                    console.log('[Upload] Main Photo uploaded to Cloudinary:', payload.photoUrl);
+                } else if (f.fieldname === 'spousePhoto') {
+                    payload.spousePhotoUrl = f.path;
+                    // Note: Spouse photo ID handling might need to be nested or separate if spouse is a separate entity logic in recursive
+                    console.log('[Upload] Spouse Photo uploaded to Cloudinary');
+                }
+            });
+        } else {
+             console.log('[POST /] No files received or req.files is empty');
         }
 
         // Use Recursive Upsert for clean handling
@@ -1066,13 +1154,12 @@ router.post('/', verifyToken, checkPermission('member.create'), uploadMiddleware
  *       200:
  *         description: Member updated
  */
-router.put('/:id', verifyToken, checkPermission('member.edit'), uploadMiddleware([
-    { name: 'photo', maxCount: 1 },
-    { name: 'spousePhoto', maxCount: 1 }
-]), async (req, res) => {
+// Update Member (Individual or from Linkage) with upload.any() for robustness
+router.put('/:id', verifyToken, checkPermission('member.edit'), upload.any(), async (req, res) => {
     try {
         const idParam = req.params.id;
         
+        // Support MemberID or MongoDB _id
         let member;
         if (idParam.startsWith('M')) {
             member = await Member.findOne({ memberId: idParam });
@@ -1086,18 +1173,25 @@ router.put('/:id', verifyToken, checkPermission('member.edit'), uploadMiddleware
         // Strip id and memberId from req.body to prevent Mongoose immutable field errors or logic collisions
         let { id, _id, memberId, ...updates } = req.body;
 
-        // Handle File Upload (Memory Storage - Convert to Base64)
-        if (req.files) {
-            if (req.files['photo']) {
-                const file = req.files['photo'][0];
-                updates.photoUrl = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
-                console.log('[Upload] Main Photo converted to Base64');
-            }
-            if (req.files['spousePhoto']) {
-                const file = req.files['spousePhoto'][0];
-                updates.spousePhotoUrl = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
-                console.log('[Upload] Spouse Photo converted to Base64');
-            }
+        // Explicitly set the ID for upsertMemberRecursive to perform an UPDATE, not CREATE
+        updates._id = member._id.toString();
+
+        // Handle Cloudinary File Uploads (upload.any() produces array in req.files)
+        if (req.files && Array.isArray(req.files) && req.files.length > 0) {
+            console.log(`[PUT /:id] Files received: ${req.files.length}`);
+            req.files.forEach(f => {
+                if (f.fieldname === 'photo') {
+                    updates.photoUrl = f.path;
+                    updates.photoId = f.filename;
+                    console.log('[Upload] Main Photo uploaded to Cloudinary:', updates.photoUrl);
+                } else if (f.fieldname === 'spousePhoto') {
+                    updates.spousePhotoUrl = f.path;
+                    // We need to pass this down to the spouse object if it exists in updates
+                    console.log('[Upload] Spouse Photo uploaded to Cloudinary');
+                }
+            });
+        } else {
+             console.log('[PUT /:id] No files received or req.files is empty');
         }
 
         // Logic: New Family ID if Marriage Status changes
@@ -1124,6 +1218,11 @@ router.put('/:id', verifyToken, checkPermission('member.edit'), uploadMiddleware
             // If photo updated
             if (updates.spousePhotoUrl) {
                 updates.spouse.photoUrl = updates.spousePhotoUrl;
+                // Attempt to retrieve spouse photo ID if we have access to the file object corresponding to spousePhoto
+                // req.files['spousePhoto'] is available in the scope above.
+                if (req.files && req.files['spousePhoto']) {
+                    updates.spouse.photoId = req.files['spousePhoto'][0].filename;
+                }
             }
         }
 

@@ -2,12 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Notice = require('../models/Notice');
 const { verifyToken, checkPermission } = require('../middleware/authMiddleware');
-const multer = require('multer');
-const path = require('path');
-
-// Configure Multer for File Uploads (Memory Storage for Serverless)
-const storage = multer.memoryStorage();
-const upload = multer({ storage });
+const { upload } = require('../config/cloudinary');
 
 /**
  * @swagger
@@ -62,7 +57,10 @@ router.post('/', verifyToken, checkPermission('notices.manage'), upload.single('
         let fileUrl = '';
 
         if (req.file) {
-            fileUrl = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+            fileUrl = req.file.path;
+            const fileId = req.file.filename;
+
+            newNotice.fileId = fileId;
         }
 
         let parsedRecipients = [];
@@ -152,7 +150,8 @@ router.post('/patrika', verifyToken, upload.single('file'), async (req, res) => 
             return res.status(400).json({ message: 'Recipient and File are required' });
         }
 
-        const fileUrl = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+        const fileUrl = req.file.path;
+        const fileId = req.file.filename;
 
         const newNotice = new Notice({
             title: title || 'New Patrika Received',
@@ -160,6 +159,7 @@ router.post('/patrika', verifyToken, upload.single('file'), async (req, res) => 
             type: 'General', // Using General type for now, or could define 'Patrika'
             target: 'Selected',
             fileUrl,
+            fileId,
             recipients: [recipientId],
             createdBy: req.user.id
         });

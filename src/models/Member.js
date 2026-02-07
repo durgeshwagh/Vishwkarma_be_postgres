@@ -31,6 +31,7 @@ const MemberSchema = new mongoose.Schema({
     occupationType: { type: String, enum: ['Job', 'Business', 'Farmer', 'Student', 'Housewife', 'Retired', 'Other', ''] },
     jobType: { type: String, enum: ['Software Engineer', 'Teacher', 'Government Employee', 'Private Company Employee', 'Doctor', 'Nurse', 'Accountant', 'Clerk', 'Security Guard', 'Driver', 'Other', ''] },
     photoUrl: { type: String },
+    photoId: { type: String }, // Cloudinary Public ID
     showOnMatrimony: { type: Boolean, default: false },
     blood_group: { type: String },
     height: { type: String },

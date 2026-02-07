@@ -1,17 +1,8 @@
 const express = require('express');
 const Event = require('../models/Event');
 const { verifyToken, checkPermission } = require('../middleware/authMiddleware');
-const multer = require('multer');
-const path = require('path');
+const { upload } = require('../config/cloudinary');
 const router = express.Router();
-
-// Multer Configuration for Events (Memory Storage for Serverless)
-const storage = multer.memoryStorage();
-
-const upload = multer({ 
-    storage: storage,
-    limits: { fileSize: 50 * 1024 * 1024 } // 50MB (for videos)
-});
 
 /**
  * @swagger
@@ -83,11 +74,15 @@ router.post('/', verifyToken, checkPermission('events.manage'), upload.single('m
         const payload = { ...req.body };
         
         if (req.file) {
-            const mediaBase64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+            const mediaUrl = req.file.path;
+            const mediaId = req.file.filename;
+
             if (req.body.mediaType === 'Video') {
-                payload.videoUrl = mediaBase64;
+                payload.videoUrl = mediaUrl;
+                payload.videoId = mediaId;
             } else {
-                payload.imageUrl = mediaBase64;
+                payload.imageUrl = mediaUrl;
+                payload.imageId = mediaId;
             }
         }
 
@@ -154,13 +149,19 @@ router.put('/:id', verifyToken, checkPermission('events.manage'), upload.single(
         const updates = { ...req.body };
         
         if (req.file) {
-            const mediaBase64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+            const mediaUrl = req.file.path;
+            const mediaId = req.file.filename;
+            
             if (req.body.mediaType === 'Video') {
-                updates.videoUrl = mediaBase64;
+                updates.videoUrl = mediaUrl;
+                updates.videoId = mediaId;
                 updates.imageUrl = ''; // Clear other one
+                updates.imageId = '';
             } else {
-                updates.imageUrl = mediaBase64;
+                updates.imageUrl = mediaUrl;
+                updates.imageId = mediaId;
                 updates.videoUrl = ''; // Clear other one
+                updates.videoId = '';
             }
         }
 

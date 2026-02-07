@@ -10,11 +10,7 @@ const path = require('path');
  */
 const BoardMember = require('../models/BoardMember');
 const { verifyToken } = require('../middleware/authMiddleware');
-const multer = require('multer');
-
-// Configure Multer for File Uploads (Memory Storage for Serverless)
-const storage = multer.memoryStorage();
-const upload = multer({ storage });
+const { upload } = require('../config/cloudinary');
 
 /**
  * @swagger
@@ -116,9 +112,11 @@ router.post('/', verifyToken, upload.single('photo'), async (req, res) => {
 
         const { year, role, name, description, memberId, contact, city } = req.body;
         let photoUrl = '';
+        let photoId = '';
 
         if (req.file) {
-            photoUrl = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+            photoUrl = req.file.path;
+            photoId = req.file.filename;
         }
 
         const newMember = new BoardMember({
@@ -130,6 +128,7 @@ router.post('/', verifyToken, upload.single('photo'), async (req, res) => {
             contact,
             city,
             photoUrl,
+            photoId,
             createdBy: req.user.id
         });
 
@@ -151,7 +150,8 @@ router.put('/:id', verifyToken, upload.single('photo'), async (req, res) => {
         const updates = req.body;
 
         if (req.file) {
-            updates.photoUrl = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+            updates.photoUrl = req.file.path;
+            updates.photoId = req.file.filename;
         }
 
         const updatedMember = await BoardMember.findByIdAndUpdate(id, updates, { new: true });

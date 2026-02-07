@@ -1,6 +1,24 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
+const { upload } = require('../config/cloudinary');
+
+// Image Upload Route
+router.post('/upload-image', upload.single('file'), (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+        res.json({
+            message: 'Image uploaded successfully',
+            imageUrl: req.file.path,
+            publicId: req.file.filename
+        });
+    } catch (error) {
+        console.error('Upload Error:', error);
+        res.status(500).json({ error: 'Failed to upload image' });
+    }
+});
 
 // Proxy route for Google Transliteration to avoid CORS
 router.get('/transliterate', async (req, res) => {

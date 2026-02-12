@@ -118,6 +118,9 @@ MemberSchema.virtual('spouseId').get(function() { return this.spouse; });
 
 // Compound Index for List/Table Filtering (Primary Search Patterns)
 MemberSchema.index({ familyId: 1, isPrimary: -1 });
+MemberSchema.index({ isPrimary: 1, createdAt: -1 }); // Optimized for Primary Member List (Default Sort)
+MemberSchema.index({ isPrimary: 1, lifeStatus: 1, fullName: 1 }); // Optimized for Name Sort (with Alive filter)
+MemberSchema.index({ isPrimary: 1, lifeStatus: 1 }); // Optimized for Count
 MemberSchema.index({ lifeStatus: 1, gender: 1, maritalStatus: 1 });
 
 // Compound Index for Geography Filtering

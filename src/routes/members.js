@@ -185,7 +185,7 @@ router.get('/', verifyToken, checkPermission('member.view'), async (req, res) =>
         // Note: If limit is 0, we bypass the min/max in paginate utility if it causes issues, but utility maxes at 100.
         // For 'load all' (limit=0), we handle it separately here to avoid restricting to 100.
         
-        const selectFields = 'memberId firstName middleName lastName fullName prefix gender dob lifeStatus maritalStatus photoUrl contact education occupation occupationType jobType city district taluka village geography familyId isPrimary verification createdBy createdAt';
+        const selectFields = 'memberId firstName middleName lastName fullName prefix gender dob lifeStatus maritalStatus photoUrl contact education occupation occupationType jobType city district taluka village state geography familyId isPrimary verification createdBy createdAt';
 
         let result;
         if (limit === 0) {

@@ -53,10 +53,23 @@ async function paginate(Model, query = {}, options = {}) {
     }
 
     // Execute query and count in parallel for better performance
-    const [data, total] = await Promise.all([
-        queryBuilder.exec(),
-        Model.countDocuments(query)
-    ]);
+    console.time(`Query-${Model.modelName}`);
+    console.time(`Count-${Model.modelName}`);
+    
+    // Split execution to measure individually if needed, but keeping parallel for speed
+    // and just measuring total time for now, or we can split to analyze.
+    // Let's split them to see which one is slow.
+    const startFind = Date.now();
+    const data = await queryBuilder.exec();
+    const findTime = Date.now() - startFind;
+    
+    const startCount = Date.now();
+    const total = await Model.countDocuments(query);
+    const countTime = Date.now() - startCount;
+
+    if (findTime >= 100 || countTime >= 100) {
+       console.error(`[PERF] ${Model.modelName} - Slow Query - Find: ${findTime}ms, Count: ${countTime}ms. Query: ${JSON.stringify(query)}`);
+    }
 
     return {
         data,

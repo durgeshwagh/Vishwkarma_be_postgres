@@ -29,7 +29,9 @@ UserSchema.index({ email: 1 }, { unique: true, sparse: true }); // Login by emai
 UserSchema.index({ mobile: 1 }, { sparse: true }); // Login/search by mobile
 UserSchema.index({ username: 1 }, { unique: true }); // Login by username
 UserSchema.index({ role: 1, isVerified: 1 }); // Admin queries for user management
+UserSchema.index({ role: 1, isVerified: 1 }); // Admin queries for user management
 UserSchema.index({ isVerified: 1 }); // Pending approvals query
+UserSchema.index({ memberId: 1 }); // Optimize registration status check
 
 // Full Text Search Index
 UserSchema.index({

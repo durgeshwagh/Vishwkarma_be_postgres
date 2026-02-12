@@ -122,7 +122,8 @@ router.get('/', verifyToken, checkPermission('member.view'), async (req, res) =>
         
         // 1. Life Status Filter (Default: Hide Deceased AND Swa./Late prefixes)
         if (!showDeceased || showDeceased.toString().toLowerCase() !== 'true') {
-            andConditions.push({ lifeStatus: { $ne: 'Deceased' } });
+            // OPTIMIZATION: Use Equality instead of $ne for better index usage with sorting
+            andConditions.push({ lifeStatus: 'Alive' });
             andConditions.push({ prefix: { $ne: 'स्व.' } }); // Hindi Swa.
             andConditions.push({ prefix: { $not: /Late/i } });
             andConditions.push({ prefix: { $not: /^Swa/i } });
@@ -130,6 +131,8 @@ router.get('/', verifyToken, checkPermission('member.view'), async (req, res) =>
 
         // 2. Explicit Filters
         if (isPrimary && isPrimary.toString().toLowerCase().trim() === 'true') query.isPrimary = true;
+        
+
         if (req.query.showOnMatrimony === 'true') query.showOnMatrimony = true;
         if (gender) query.gender = gender.trim();
         if (maritalStatus) query.maritalStatus = maritalStatus.trim();
@@ -177,26 +180,39 @@ router.get('/', verifyToken, checkPermission('member.view'), async (req, res) =>
         const sort = { [sortBy]: sortOrder === 'asc' ? 1 : -1 };
 
         // Execute Pagination
+
+        
         // Note: If limit is 0, we bypass the min/max in paginate utility if it causes issues, but utility maxes at 100.
         // For 'load all' (limit=0), we handle it separately here to avoid restricting to 100.
+        
+        const selectFields = 'memberId firstName middleName lastName fullName prefix gender dob lifeStatus maritalStatus photoUrl contact education occupation occupationType jobType city district taluka village geography familyId isPrimary verification createdBy createdAt';
+
         let result;
         if (limit === 0) {
-            const data = await Member.find(query).sort(sort).lean();
+            const data = await Member.find(query).sort(sort).select(selectFields).lean();
             result = { data, pagination: { total: data.length, page: 1, limit: 0, pages: 1 } };
         } else {
-            result = await paginate(Member, query, { page, limit, sort, lean: true });
+            result = await paginate(Member, query, { page, limit, sort, lean: true, select: selectFields });
         }
 
         // 5. Add Registration Status
         const memberIds = result.data.map(m => m.memberId);
-        const User = require('../models/User');
-        const registeredUsers = await User.find({ memberId: { $in: memberIds } }).select('memberId').lean();
-        const registeredMemberIds = new Set(registeredUsers.map(u => u.memberId));
+        // const User = require('../models/User');
+        // const startUserLookup = Date.now();
+        // const registeredUsers = await User.find({ memberId: { $in: memberIds } }).select('memberId').lean();
+        // const userLookupTime = Date.now() - startUserLookup;
+        // if (userLookupTime > 100) {
+        //     console.log(`[PERF] User Lookup took ${userLookupTime}ms for ${memberIds.length} members.`);
+        // }
+        // const registeredMemberIds = new Set(registeredUsers.map(u => u.memberId));
+        const registeredMemberIds = new Set();
 
         const membersWithStatus = result.data.map(m => ({
             ...m,
             isRegistered: registeredMemberIds.has(m.memberId)
         }));
+
+
 
         res.json({
             data: membersWithStatus,

@@ -530,6 +530,53 @@ async function handleBulkSave(req, res) {
 
         console.log('[DEBUG] bulk-save payload members:', payload.member ? payload.member.firstName : 'Unknown');
 
+        // ---------------------------------------------------------
+        // SECURITY CHECK: Role-Based Family Restriction
+        // ---------------------------------------------------------
+        if (req.user.role !== 'SuperAdmin' && req.user.role !== 'Admin') {
+            // Regular users can ONLY edit/add to their own Family
+            const userFamilyId = req.user.familyId;
+            
+            // 1. Check Payload Family ID (if new member)
+            // If they are trying to set a familyId, it must match theirs (unless creating new family - but regular users usually join/edit)
+            // Actually, regular users usually shouldn't be creating NEW families from scratch via this route if restricts apply.
+            // But let's check the TARGET Member.
+            
+            let targetMemberId = payload.member.memberId || payload.member.id || payload.member._id;
+            
+            if (targetMemberId) {
+                // Editing Existing Member OR Adding with ID
+                // We must verify this target member belongs to the user's family
+                let targetParams = {};
+                if (targetMemberId.toString().startsWith('M')) targetParams.memberId = targetMemberId;
+                else targetParams._id = targetMemberId;
+
+                const existingMember = await Member.findOne(targetParams);
+                if (existingMember) {
+                    // Check Family ID match
+                    if (existingMember.familyId !== userFamilyId) {
+                         console.warn(`[Security] User ${req.user.memberId} (Family: ${userFamilyId}) tried to edit ${existingMember.memberId} (Family: ${existingMember.familyId})`);
+                         return res.status(403).json({ message: 'Access Denied: You can only edit members of your own family.' });
+                    }
+                }
+            } else {
+                // Creating New Member - Force Family ID to match User's
+                // Or deny if they try to set a different one?
+                // Let's enforce: If creating new, it will be assigned to User's Family implicitly or explicitly checked
+                if (payload.member.familyId && payload.member.familyId !== userFamilyId && payload.member.familyId !== 'FNew') {
+                     // Allowing 'FNew' might be risky if they can create rogue families, but usually acceptable for "New Family" feature.
+                     // However, "Edit only his family" implies he shouldn't be creating NEW families either? 
+                     // Assuming "Add Child" uses this - it sends familyId.
+                     
+                     if (payload.member.familyId !== userFamilyId) {
+                         return res.status(403).json({ message: 'Access Denied: You cannot add members to other families.' });
+                     }
+                }
+            }
+        }
+        // ---------------------------------------------------------
+
+
         // MAP UPLOADED FILES TO PAYLOAD
         if (req.files && req.files.length > 0) {
             console.log(`[Upload] Processing ${req.files.length} uploaded files...`);

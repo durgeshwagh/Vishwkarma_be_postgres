@@ -5,6 +5,7 @@ const User = require('../models/User');
 const Member = require('../models/Member');
 const { verifyToken } = require('../middleware/authMiddleware');
 const { sendEmail } = require('../services/emailService');
+const { publicKey, decrypt } = require('../utils/encryption');
 
 const router = express.Router();
 
@@ -156,10 +157,25 @@ router.post('/create-user', verifyToken, async (req, res) => {
  */
 const mongoose = require('mongoose');
 
+// NEW: Public Key Endpoint
+router.get('/public-key', (req, res) => {
+    res.json({ publicKey });
+});
+
 router.post('/login', async (req, res) => {
     try {
-        let { username, password } = req.body;
-        console.log('[DEBUG] Login Payload:', JSON.stringify(req.body, null, 2));
+        let { username, password, isEncrypted } = req.body;
+        console.log('[DEBUG] Login Payload:', JSON.stringify({ ...req.body, password: '***' }, null, 2));
+
+        // Decrypt Password if encrypted
+        if (isEncrypted && password) {
+            console.log('[DEBUG] Decrypting password...');
+            const decrypted = decrypt(password);
+            if (!decrypted) {
+                return res.status(400).json({ message: 'Invalid encrypted password' });
+            }
+            password = decrypted;
+        }
 
         // DIAGNOSTIC LOGGING
         console.log(`[DEBUG] global.useMockDb: ${global.useMockDb}`);

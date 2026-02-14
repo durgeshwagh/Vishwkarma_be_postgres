@@ -170,11 +170,19 @@ router.post('/login', async (req, res) => {
         // Decrypt Password if encrypted
         if (isEncrypted && password) {
             console.log('[DEBUG] Decrypting password...');
+            console.log('[DEBUG] Encrypted password length:', password.length);
             const decrypted = decrypt(password);
             if (!decrypted) {
-                return res.status(400).json({ message: 'Invalid encrypted password' });
+                console.error('[ERROR] Password decryption failed - possible key mismatch');
+                console.error('[ERROR] This usually happens when the server restarted and generated new RSA keys');
+                console.error('[ERROR] Frontend needs to refresh to get the new public key');
+                return res.status(400).json({ 
+                    message: 'Password decryption failed. Please refresh the page and try again.',
+                    code: 'DECRYPTION_FAILED'
+                });
             }
             password = decrypted;
+            console.log('[DEBUG] Password decrypted successfully');
         }
 
         // DIAGNOSTIC LOGGING

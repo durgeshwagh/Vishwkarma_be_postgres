@@ -1,17 +1,63 @@
 const NodeRSA = require('node-rsa');
+const fs = require('fs');
+const path = require('path');
 
-// Determine if we should generate new keys on startup or persist them.
-// For simplicity in this context, we'll generate a fresh pair on server start.
-// In a real production environment, you'd likely want to persist these keys.
-// However, rotating them on restart is also a valid security strategy (session-based).
+// Path to store RSA keys
+const KEYS_DIR = path.join(__dirname, '..', 'config');
+const PUBLIC_KEY_PATH = path.join(KEYS_DIR, 'rsa_public.pem');
+const PRIVATE_KEY_PATH = path.join(KEYS_DIR, 'rsa_private.pem');
 
-const key = new NodeRSA({ b: 512 }); // 512-bit key for speed; 2048 is better for higher security
-key.setOptions({ encryptionScheme: 'pkcs1' });
+let key;
+let publicKey;
+let privateKey;
 
-const publicKey = key.exportKey('public');
-const privateKey = key.exportKey('private');
+/**
+ * Load or generate RSA keys
+ * If keys exist on disk, load them. Otherwise, generate new ones and save.
+ */
+function initializeKeys() {
+    try {
+        // Ensure config directory exists
+        if (!fs.existsSync(KEYS_DIR)) {
+            fs.mkdirSync(KEYS_DIR, { recursive: true });
+        }
 
-console.log('[Encryption] RSA Keys Generated');
+        // Check if keys already exist
+        if (fs.existsSync(PUBLIC_KEY_PATH) && fs.existsSync(PRIVATE_KEY_PATH)) {
+            console.log('[Encryption] Loading existing RSA keys from disk...');
+            publicKey = fs.readFileSync(PUBLIC_KEY_PATH, 'utf8');
+            privateKey = fs.readFileSync(PRIVATE_KEY_PATH, 'utf8');
+            
+            // Import keys into NodeRSA
+            key = new NodeRSA();
+            key.importKey(privateKey, 'private');
+            key.setOptions({ encryptionScheme: 'pkcs1' });
+            
+            console.log('[Encryption] RSA keys loaded successfully');
+        } else {
+            console.log('[Encryption] No existing keys found. Generating new RSA keys...');
+            
+            // Generate new key pair
+            key = new NodeRSA({ b: 2048 }); // 2048-bit for better security
+            key.setOptions({ encryptionScheme: 'pkcs1' });
+            
+            publicKey = key.exportKey('public');
+            privateKey = key.exportKey('private');
+            
+            // Save keys to disk
+            fs.writeFileSync(PUBLIC_KEY_PATH, publicKey, 'utf8');
+            fs.writeFileSync(PRIVATE_KEY_PATH, privateKey, 'utf8');
+            
+            console.log('[Encryption] New RSA keys generated and saved to disk');
+        }
+    } catch (err) {
+        console.error('[Encryption] Error initializing keys:', err);
+        throw err;
+    }
+}
+
+// Initialize keys on module load
+initializeKeys();
 
 /**
  * Decrypts an encrypted message using the private key.

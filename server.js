@@ -153,7 +153,7 @@ app.use('/uploads', express.static('uploads', {
 }));
 
 app.get('/', (req, res) => {
-    res.send('Backend Modified: 2026-01-31 15:35 GMT');
+    res.send('Backend Modified: 2026-02-14 23:40 GMT (Dual Login Ready)');
 });
 
 // Database Connection

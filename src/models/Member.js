@@ -89,6 +89,7 @@ const MemberSchema = new mongoose.Schema({
     },
 
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
 
     // ===============================
     // Legacy Compatibility (Hidden/Internal)

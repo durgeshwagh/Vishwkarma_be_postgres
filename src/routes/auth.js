@@ -157,6 +157,28 @@ router.post('/create-user', verifyToken, async (req, res) => {
  */
 const mongoose = require('mongoose');
 
+// Helper to safely find member by string memberId or ObjectId _id
+async function findMemberSafely(idOrMId, unusedFields = null) {
+    if (!idOrMId) return null;
+    const mid = String(idOrMId);
+    
+    // 1. Raw lookup to avoid Mongoose casting bugs entirely
+    let member = await Member.collection.findOne({ memberId: mid });
+    if (member) return member;
+    
+    // 2. Fallback to _id if valid and not found by memberId
+    if (mongoose.isValidObjectId(mid)) {
+        try {
+            return await Member.findById(mid).lean();
+        } catch (e) {
+            // Silently ignore CastErrors
+        }
+    }
+    
+    return null;
+}
+
+
 // NEW: Public Key Endpoint
 router.get('/public-key', (req, res) => {
     res.json({ publicKey });
@@ -165,12 +187,9 @@ router.get('/public-key', (req, res) => {
 router.post('/login', async (req, res) => {
     try {
         let { username, password, isEncrypted } = req.body;
-        console.log('[DEBUG] Login Payload:', JSON.stringify({ ...req.body, password: '***' }, null, 2));
 
         // Decrypt Password if encrypted
         if (isEncrypted && password) {
-            console.log('[DEBUG] Decrypting password...');
-            console.log('[DEBUG] Encrypted password length:', password.length);
             const decrypted = decrypt(password);
             if (!decrypted) {
                 console.error('[ERROR] Password decryption failed - possible key mismatch');
@@ -182,12 +201,9 @@ router.post('/login', async (req, res) => {
                 });
             }
             password = decrypted;
-            console.log('[DEBUG] Password decrypted successfully');
         }
 
         // DIAGNOSTIC LOGGING
-        console.log(`[DEBUG] global.useMockDb: ${global.useMockDb}`);
-        console.log(`[DEBUG] mongoose.connection.readyState: ${mongoose.connection.readyState}`);
         // 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
 
         // Mock DB Fallback OR Connection Broken Fallback
@@ -259,19 +275,25 @@ router.post('/login', async (req, res) => {
         if (username) username = username.trim();
 
         // Find user - optimized query using indexed fields
-        const user = await User.findOne({
+        let user = await User.findOne({
             $or: [{ username }, { email: username }]
         }).select('+password'); // Need password for comparison
 
+        // If not found, try finding as a Member ID alias (e.g. M9067)
         if (!user) {
-            console.log('[DEBUG] User not found (Login failed)');
+            const memberAlias = await findMemberSafely(username);
+            if (memberAlias) {
+                 user = await User.findOne({ memberId: memberAlias._id }).select('+password');
+            }
+        }
+
+        if (!user) {
             return res.status(404).json({ message: 'User not found' });
         }
 
         // Check password
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
-            console.log('[DEBUG] Invalid credentials');
             return res.status(400).json({ message: 'Invalid credentials' });
         }
 
@@ -285,8 +307,11 @@ router.post('/login', async (req, res) => {
             return res.status(403).json({ message: 'Account is disabled. Please contact admin.' });
         }
 
-        // Find Linked Member - optimized with lean() and select()
-        let linkedMember = null;
+        // PRIORITY LINKING: Use explicit link from user record first
+        linkedMember = await findMemberSafely(user.memberId);
+
+        // AUTO-LINKING: Use email/phone if NOT explicitly linked (Fallback)
+        if (!linkedMember && (user.email || user.mobile)) {
             linkedMember = await Member.findOne({
                 $or: [
                     { email: user.email },
@@ -294,7 +319,8 @@ router.post('/login', async (req, res) => {
                 ]
             })
                 .select('memberId firstName lastName email phone photoUrl familyId')
-                .lean(); // Faster read-only query
+                .lean();
+        }
 
         // Special Case: Family ID Login
         if (!linkedMember && user.username.startsWith('F')) {
@@ -311,16 +337,6 @@ router.post('/login', async (req, res) => {
                     .select('memberId firstName lastName email phone photoUrl familyId')
                     .lean();
             }
-        }
-
-        // If still not found, use memberId from user record if set
-        if (!linkedMember && user.memberId) {
-            linkedMember = await Member.findOne({
-                $or: [
-                    { _id: user.memberId },
-                    { memberId: user.memberId }
-                ]
-            }).select('memberId firstName lastName email phone photoUrl familyId').lean();
         }
 
         // Determine display name with fallback logic
@@ -359,7 +375,6 @@ router.post('/login', async (req, res) => {
             }
         });
     } catch (err) {
-        console.error('[DEBUG] Login Error Stack:', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -451,14 +466,17 @@ router.post('/verify-otp', async (req, res) => {
         user.otpExpires = undefined;
         await user.save();
 
-        let linkedMember = await Member.findOne({
-            $or: [
-                { email: user.email },
-                { phone: user.mobile }
-            ]
-        })
-            .select('memberId firstName lastName email phone photoUrl')
-            .lean();
+        // Find linked member - Priority to explicit link
+        let linkedMember = await findMemberSafely(user.memberId);
+        
+        if (!linkedMember && (user.email || user.mobile)) {
+            linkedMember = await Member.findOne({
+                $or: [
+                    { email: user.email },
+                    { phone: user.mobile }
+                ]
+            }).select('memberId firstName lastName email phone photoUrl familyId').lean();
+        }
 
         // Determine display name with fallback logic
         const displayName = user.name ||
@@ -594,21 +612,21 @@ router.get('/profile', verifyToken, async (req, res) => {
         // Fetch linked member for photoUrl and familyId
         let photoUrl = null;
         let familyId = null;
+        let linkedMember = null;
 
-        if (user.memberId) {
-            const member = await Member.findById(user.memberId).select('photoUrl familyId').lean();
-            if (member) {
-                photoUrl = member.photoUrl;
-                familyId = member.familyId;
-            }
-        } else if (user.email || user.mobile) {
-            const member = await Member.findOne({
+        // PRIORITY LINKING: Use explicit link first
+        linkedMember = await findMemberSafely(user.memberId, 'memberId photoUrl familyId');
+        
+        // AUTO-LINKING: Fallback if no explicit link
+        if (!linkedMember && (user.email || user.mobile)) {
+            linkedMember = await Member.findOne({
                 $or: [{ email: user.email }, { phone: user.mobile }]
-            }).select('photoUrl familyId').lean();
-            if (member) {
-                photoUrl = member.photoUrl;
-                familyId = member.familyId;
-            }
+            }).select('memberId photoUrl familyId').lean();
+        }
+
+        if (linkedMember) {
+            photoUrl = linkedMember.photoUrl;
+            familyId = linkedMember.familyId;
         }
 
         // Return similar structure to login
@@ -656,9 +674,40 @@ router.put('/approve-user/:id', async (req, res) => {
         const { id } = req.params;
         const { role, permissions, memberId } = req.body;
 
+        const updateData = { 
+            isVerified: true, 
+            role: role || 'Member', 
+            permissions: permissions || [] 
+        };
+
+        // Check for duplicate Member Link
+        if (memberId) {
+            const existingUser = await User.findOne({ memberId, _id: { $ne: id } });
+            if (existingUser) {
+                return res.status(400).json({ message: `Member is already linked to user '${existingUser.username}'` });
+            }
+
+            // Fetch member details to sync name and memberId
+            const member = await findMemberSafely(memberId);
+            if (member) {
+                updateData.memberId = memberId;
+                updateData.name = `${member.firstName} ${member.lastName}`.trim();
+                
+                // Update member with bidirectional link
+                await Member.findByIdAndUpdate(memberId, { userId: id });
+            }
+        } else if (memberId === null) {
+            // Unlinking: Clear userId from member record
+            const oldUser = await User.findById(id);
+            if (oldUser && oldUser.memberId) {
+                await Member.findByIdAndUpdate(oldUser.memberId, { userId: null });
+            }
+            updateData.memberId = null;
+        }
+
         const user = await User.findByIdAndUpdate(
             id,
-            { isVerified: true, role: role || 'Member', permissions: permissions || [], memberId },
+            updateData,
             { new: true }
         ).select('-password');
 
@@ -687,7 +736,35 @@ router.get('/users', verifyToken, async (req, res) => {
         }
         */
 
-        const users = await User.find(query).select('-password');
+        const users = await User.aggregate([
+            { $match: query },
+            {
+                $lookup: {
+                    from: 'members', // Name of the members collection
+                    let: { mid: '$memberId' },
+                    pipeline: [
+                        {
+                            $match: {
+                                $expr: {
+                                    $or: [
+                                        { $eq: ['$memberId', '$$mid'] },
+                                        { $eq: [{ $toString: '$_id' }, '$$mid'] }
+                                    ]
+                                }
+                            }
+                        },
+                        { $project: { firstName: 1, lastName: 1, memberId: 1, photoUrl: 1, phone: 1, email: 1 } }
+                    ],
+                    as: 'memberDetails'
+                }
+            },
+            {
+                $addFields: {
+                    memberDetails: { $arrayElemAt: ['$memberDetails', 0] }
+                }
+            },
+            { $project: { password: 0 } }
+        ]);
         res.json(users);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -733,7 +810,32 @@ router.put('/users/:id/permissions', verifyToken, async (req, res) => {
         const updateData = {};
         if (permissions) updateData.permissions = permissions;
         if (role) updateData.role = role;
-        if (memberId !== undefined) updateData.memberId = memberId; // Allow linking/unlinking
+        if (memberId !== undefined) {
+             // Check for duplicate Member Link if we are setting a new memberId
+             if (memberId) {
+                const existingUser = await User.findOne({ memberId, _id: { $ne: id } });
+                if (existingUser) {
+                    return res.status(400).json({ message: `Member is already linked to user '${existingUser.username}'` });
+                }
+
+                // Sync name and memberId
+                const member = await findMemberSafely(memberId);
+                if (member) {
+                    updateData.memberId = memberId;
+                    updateData.name = `${member.firstName} ${member.lastName}`.trim();
+                    
+                    // Bidirectional link
+                    await Member.findByIdAndUpdate(memberId, { userId: id });
+                }
+             } else {
+                 // Unlinking
+                 const oldUser = await User.findById(id);
+                 if (oldUser && oldUser.memberId) {
+                     await Member.findByIdAndUpdate(oldUser.memberId, { userId: null });
+                 }
+                 updateData.memberId = null;
+             }
+        }
 
         const user = await User.findByIdAndUpdate(id, updateData, { new: true }).select('-password');
         if (!user) return res.status(404).json({ message: 'User not found' });

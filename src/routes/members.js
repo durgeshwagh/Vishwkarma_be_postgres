@@ -250,27 +250,22 @@ router.get('/', verifyToken, checkPermission('member.view'), async (req, res) =>
 router.get('/:id', verifyToken, checkPermission('member.view'), async (req, res) => {
     try {
         const idParam = req.params.id;
-        console.log(`[DEBUG] GET /members/:id called with id: ${idParam}`);
 
         let member;
 
         if (idParam.startsWith('M')) {
-            console.log(`[DEBUG] Detected Custom ID. Searching by memberId.`);
             // Assume it's a custom Member ID
             member = await Member.findOne({ memberId: idParam });
         } else {
-            console.log(`[DEBUG] Detected Mongo ID. Searching by _id.`);
             // Assume it's a Mongo ID
             member = await Member.findById(idParam);
         }
 
         if (!member) {
-            console.log(`[DEBUG] Member not found.`);
             return res.status(404).json({ message: 'Member not found' });
         }
         res.json(member);
     } catch (err) {
-        console.error(`[DEBUG] Error in GET /members/:id:`, err.message);
 
         // Fallback: If findById fails (e.g. invalid format), try findOne by memberId just in case
         try {
@@ -304,7 +299,6 @@ router.get('/:id', verifyToken, checkPermission('member.view'), async (req, res)
 router.get('/:id/edit-profile', verifyToken, checkPermission('member.view'), async (req, res) => {
     try {
         const idParam = req.params.id;
-        console.log(`[DEBUG] GET /members/:id/edit-profile called with id: ${idParam}`);
 
         let member = idParam.startsWith('M')
             ? await Member.findOne({ memberId: idParam })
@@ -320,10 +314,8 @@ router.get('/:id/edit-profile', verifyToken, checkPermission('member.view'), asy
             spouse = await Member.findById(member.spouse);
         }
 
-        console.log(`[DEBUG] edit-profile returning member: ${member.firstName}, spouse: ${spouse?.firstName || 'none'}`);
         res.json({ member, spouse });
     } catch (err) {
-        console.error(`[DEBUG] Error in GET /members/:id/edit-profile:`, err.message);
         res.status(500).json({ error: err.message });
     }
 });
@@ -528,7 +520,6 @@ async function handleBulkSave(req, res) {
             }
         }
 
-        console.log('[DEBUG] bulk-save payload members:', payload.member ? payload.member.firstName : 'Unknown');
 
         // ---------------------------------------------------------
         // SECURITY CHECK: Role-Based Family Restriction
@@ -693,11 +684,9 @@ async function handleBulkSave(req, res) {
 
             // 1. Map to Optimized Structure of Current Node
             const data = mapFlatToOptimized(node);
-            console.log(`[DEBUG] mapped node: ${data.firstName}, memberId: ${data.memberId}, _id: ${data._id}`);
             if (!data._id) data._id = node._id || new mongoose.Types.ObjectId();
             if (!data.memberId) {
                 data.memberId = getNextMemberId();
-                console.log(`[DEBUG] generated new memberId: ${data.memberId} for ${data.firstName}`);
             }
 
             // 1.5. Inherit Geography from Context if missing
@@ -919,11 +908,11 @@ async function generateFamilyId() {
 
 // Helper to Map Flat Payload to Optimized Schema
 function mapFlatToOptimized(payload) {
-    console.log('[DEBUG] mapFlatToOptimized input payload memberId:', payload.memberId, '_id:', payload._id || payload.id);
     const clean = (val) => (typeof val === 'string' ? val.trim().replace(/\s+/g, ' ') : val);
     
     // Identity & Bio
     const data = {
+        memberId: payload.memberId,
         firstName: clean(payload.firstName),
         middleName: clean(payload.middleName),
         lastName: clean(payload.lastName),

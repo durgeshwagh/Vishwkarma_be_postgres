@@ -2,7 +2,7 @@ const NodeRSA = require('node-rsa');
 const fs = require('fs');
 const path = require('path');
 
-// Path to store RSA keys
+// Path to store RSA keys (for local development only)
 const KEYS_DIR = path.join(__dirname, '..', 'config');
 const PUBLIC_KEY_PATH = path.join(KEYS_DIR, 'rsa_public.pem');
 const PRIVATE_KEY_PATH = path.join(KEYS_DIR, 'rsa_private.pem');
@@ -13,16 +13,32 @@ let privateKey;
 
 /**
  * Load or generate RSA keys
- * If keys exist on disk, load them. Otherwise, generate new ones and save.
+ * Priority: Environment Variables > Local Files > Generate New
+ * This makes it compatible with serverless platforms like Vercel
  */
 function initializeKeys() {
     try {
+        // PRIORITY 1: Check environment variables (for Vercel/serverless)
+        if (process.env.RSA_PUBLIC_KEY && process.env.RSA_PRIVATE_KEY) {
+            console.log('[Encryption] Loading RSA keys from environment variables...');
+            publicKey = process.env.RSA_PUBLIC_KEY.replace(/\\n/g, '\n');
+            privateKey = process.env.RSA_PRIVATE_KEY.replace(/\\n/g, '\n');
+            
+            // Import keys into NodeRSA
+            key = new NodeRSA();
+            key.importKey(privateKey, 'private');
+            key.setOptions({ encryptionScheme: 'pkcs1' });
+            
+            console.log('[Encryption] RSA keys loaded from environment variables');
+            return;
+        }
+
+        // PRIORITY 2: Check local files (for traditional hosting)
         // Ensure config directory exists
         if (!fs.existsSync(KEYS_DIR)) {
             fs.mkdirSync(KEYS_DIR, { recursive: true });
         }
 
-        // Check if keys already exist
         if (fs.existsSync(PUBLIC_KEY_PATH) && fs.existsSync(PRIVATE_KEY_PATH)) {
             console.log('[Encryption] Loading existing RSA keys from disk...');
             publicKey = fs.readFileSync(PUBLIC_KEY_PATH, 'utf8');
@@ -33,22 +49,29 @@ function initializeKeys() {
             key.importKey(privateKey, 'private');
             key.setOptions({ encryptionScheme: 'pkcs1' });
             
-            console.log('[Encryption] RSA keys loaded successfully');
-        } else {
-            console.log('[Encryption] No existing keys found. Generating new RSA keys...');
-            
-            // Generate new key pair
-            key = new NodeRSA({ b: 2048 }); // 2048-bit for better security
-            key.setOptions({ encryptionScheme: 'pkcs1' });
-            
-            publicKey = key.exportKey('public');
-            privateKey = key.exportKey('private');
-            
-            // Save keys to disk
+            console.log('[Encryption] RSA keys loaded from disk');
+            return;
+        }
+
+        // PRIORITY 3: Generate new keys
+        console.log('[Encryption] No existing keys found. Generating new RSA keys...');
+        
+        // Generate new key pair
+        key = new NodeRSA({ b: 2048 }); // 2048-bit for better security
+        key.setOptions({ encryptionScheme: 'pkcs1' });
+        
+        publicKey = key.exportKey('public');
+        privateKey = key.exportKey('private');
+        
+        // Try to save keys to disk (will fail on serverless, but that's okay)
+        try {
             fs.writeFileSync(PUBLIC_KEY_PATH, publicKey, 'utf8');
             fs.writeFileSync(PRIVATE_KEY_PATH, privateKey, 'utf8');
-            
             console.log('[Encryption] New RSA keys generated and saved to disk');
+        } catch (err) {
+            console.warn('[Encryption] Could not save keys to disk (serverless environment?)');
+            console.warn('[Encryption] Keys generated but will be regenerated on next cold start');
+            console.warn('[Encryption] For production, set RSA_PUBLIC_KEY and RSA_PRIVATE_KEY environment variables');
         }
     } catch (err) {
         console.error('[Encryption] Error initializing keys:', err);

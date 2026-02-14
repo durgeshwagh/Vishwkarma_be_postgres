@@ -1899,7 +1899,12 @@ async function ensureUserForPrimaryMember(member) {
             memberId: member.memberId,
             role: 'Member', // Default Role
             isVerified: true, // Auto-verified since Admin created the member
-            permissions: []
+            permissions: [
+                'dashboard.view',
+                'stats.view',
+                'member.view',
+                'family.view'
+            ] // Basic permissions for Members
         });
 
         await newUser.save();

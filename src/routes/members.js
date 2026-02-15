@@ -522,16 +522,21 @@ async function handleBulkSave(req, res) {
 
 
         // ---------------------------------------------------------
-        // SECURITY CHECK: Role-Based Family Restriction
+        // SECURITY CHECK: Role-Based Family Restriction & Feature Permissions
         // ---------------------------------------------------------
+        
+        let userPermissions = [];
+        // Fetch User Permissions if not SuperAdmin/Admin to check granular feature access
+        if (req.user.role !== 'SuperAdmin' && req.user.role !== 'Admin') {
+             const userRecord = await User.findById(req.user.id);
+             if (userRecord && userRecord.permissions) {
+                 userPermissions = userRecord.permissions;
+             }
+        }
+
         if (req.user.role !== 'SuperAdmin' && req.user.role !== 'Admin') {
             // Regular users can ONLY edit/add to their own Family
             const userFamilyId = req.user.familyId;
-            
-            // 1. Check Payload Family ID (if new member)
-            // If they are trying to set a familyId, it must match theirs (unless creating new family - but regular users usually join/edit)
-            // Actually, regular users usually shouldn't be creating NEW families from scratch via this route if restricts apply.
-            // But let's check the TARGET Member.
             
             let targetMemberId = payload.member.memberId || payload.member.id || payload.member._id;
             
@@ -549,16 +554,32 @@ async function handleBulkSave(req, res) {
                          console.warn(`[Security] User ${req.user.memberId} (Family: ${userFamilyId}) tried to edit ${existingMember.memberId} (Family: ${existingMember.familyId})`);
                          return res.status(403).json({ message: 'Access Denied: You can only edit members of your own family.' });
                     }
+
+                    // ---------------------------------------------------------
+                    // GRANULAR PERMISSION CHECKS (Head Status & Matrimony)
+                    // ---------------------------------------------------------
+                    
+                    // 1. Head Status (isPrimary)
+                    if (payload.member.isPrimary !== undefined && payload.member.isPrimary !== existingMember.isPrimary) {
+                        if (!userPermissions.includes('member.toggle_head')) {
+                            console.warn(`[Security] User ${req.user.username} tried to change Head Status without permission.`);
+                            return res.status(403).json({ message: 'Access Denied: You do not have permission to change Head Status.' });
+                        }
+                    }
+
+                    // 2. Matrimony Visibility (showOnMatrimony)
+                    if (payload.member.showOnMatrimony !== undefined && payload.member.showOnMatrimony !== existingMember.showOnMatrimony) {
+                        if (!userPermissions.includes('member.matrimony_privacy')) {
+                             console.warn(`[Security] User ${req.user.username} tried to change Matrimony Visibility without permission.`);
+                             return res.status(403).json({ message: 'Access Denied: You do not have permission to manage Matrimony Privacy.' });
+                        }
+                    }
+                    // ---------------------------------------------------------
+
                 }
             } else {
                 // Creating New Member - Force Family ID to match User's
-                // Or deny if they try to set a different one?
-                // Let's enforce: If creating new, it will be assigned to User's Family implicitly or explicitly checked
                 if (payload.member.familyId && payload.member.familyId !== userFamilyId && payload.member.familyId !== 'FNew') {
-                     // Allowing 'FNew' might be risky if they can create rogue families, but usually acceptable for "New Family" feature.
-                     // However, "Edit only his family" implies he shouldn't be creating NEW families either? 
-                     // Assuming "Add Child" uses this - it sends familyId.
-                     
                      if (payload.member.familyId !== userFamilyId) {
                          return res.status(403).json({ message: 'Access Denied: You cannot add members to other families.' });
                      }

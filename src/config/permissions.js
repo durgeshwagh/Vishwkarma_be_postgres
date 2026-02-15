@@ -15,7 +15,9 @@ const PERMISSIONS = [
             { id: "member.create", label: "Add New Member" },
             { id: "member.edit", label: "Edit Member" },
             { id: "member.delete", label: "Delete Member" },
-            { id: "primary.view", label: "View Primary Members List" }
+            { id: "primary.view", label: "View Primary Members List" },
+            { id: "member.toggle_head", label: "Toggle Head of Family Status" },
+            { id: "member.matrimony_privacy", label: "Manage Matrimony Visibility" }
         ]
     },
     {

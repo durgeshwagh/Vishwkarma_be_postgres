@@ -719,6 +719,48 @@ router.put('/approve-user/:id', async (req, res) => {
     }
 });
 
+// Admin: Unverify User
+router.put('/unverify-user/:id', async (req, res) => {
+    try {
+        const token = req.headers.authorization?.split(' ')[1];
+        if (!token) return res.status(401).json({ message: 'Unauthorized' });
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secretKey');
+        
+        // Allow SuperAdmin OR Admin
+        if (!['SuperAdmin', 'Admin'].includes(decoded.role)) {
+             return res.status(403).json({ message: 'Access Denied: Only Admins can unverify users.' });
+        }
+
+        const { id } = req.params;
+
+        // Prevent Unverifying Self
+        if (decoded.id === id) {
+            return res.status(400).json({ message: 'You cannot unverify yourself.' });
+        }
+
+        const targetUser = await User.findById(id);
+        if (!targetUser) return res.status(404).json({ message: 'User not found' });
+
+        // PROTECT SuperAdmin from being unverified by anyone (even other SuperAdmins? Maybe just Admins? 
+        // User asked "Admin cant access... for super admin". implied SuperAdmin CAN access for SuperAdmin?
+        // But "hide for ONLY SuperAdmin" implies NO ONE accesses. 
+        // Safer to BLOCK ALL modifications to SuperAdmin via this endpoint.
+        if (targetUser.role === 'SuperAdmin') {
+            return res.status(403).json({ message: 'Access Denied: You cannot unverify a SuperAdmin.' });
+        }
+
+        const user = await User.findByIdAndUpdate(
+            id,
+            { isVerified: false },
+            { new: true }
+        ).select('-password');
+
+        res.json({ message: 'User has been unverified and can no longer login.', user });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Admin: Get All Users (Filtered by Role)
 router.get('/users', verifyToken, async (req, res) => {
     try {
@@ -801,11 +843,17 @@ router.put('/users/:id/status', verifyToken, async (req, res) => {
 // Admin: Update Permissions
 router.put('/users/:id/permissions', verifyToken, async (req, res) => {
     try {
-        if (req.user.role !== 'SuperAdmin') {
-            return res.status(403).json({ message: 'Access Denied: Only SuperAdmin can delete users.' });
+        if (req.user.role !== 'SuperAdmin' && req.user.role !== 'Admin') {
+            return res.status(403).json({ message: 'Access Denied: Only Admins can manage permissions.' });
         }
         const { id } = req.params;
         const { permissions, role, memberId } = req.body;
+
+        // Prevent modifying SuperAdmin if not SuperAdmin
+        const targetUser = await User.findById(id);
+        if (targetUser && targetUser.role === 'SuperAdmin' && req.user.role !== 'SuperAdmin') {
+            return res.status(403).json({ message: 'Access Denied: You cannot modify a SuperAdmin account.' });
+        }
 
         const updateData = {};
         if (permissions) updateData.permissions = permissions;
@@ -849,22 +897,64 @@ router.put('/users/:id/permissions', verifyToken, async (req, res) => {
 // Admin: Reset Password
 router.put('/users/:id/reset-password', verifyToken, async (req, res) => {
     try {
-        if (req.user.role !== 'SuperAdmin') {
-            return res.status(403).json({ message: 'Access Denied: Only SuperAdmin can delete users.' });
+        if (req.user.role !== 'SuperAdmin' && req.user.role !== 'Admin') {
+            return res.status(403).json({ message: 'Access Denied: Only Admins can reset passwords.' });
         }
         const { id } = req.params;
         const { password } = req.body;
+
+        // Prevent modification of SuperAdmin by non-SuperAdmin
+        const targetUser = await User.findById(id);
+        if (!targetUser) return res.status(404).json({ message: 'User not found' });
+
+        if (targetUser.role === 'SuperAdmin' && req.user.role !== 'SuperAdmin') {
+            return res.status(403).json({ message: 'Access Denied: You cannot reset a SuperAdmin password.' });
+        }
 
         if (!password || password.length < 6) {
             return res.status(400).json({ message: 'Password must be at least 6 characters' });
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        const user = await User.findByIdAndUpdate(id, { password: hashedPassword }, { new: true }).select('-password');
-
-        if (!user) return res.status(404).json({ message: 'User not found' });
+        await User.findByIdAndUpdate(id, { password: hashedPassword });
 
         res.json({ message: 'Password reset successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Admin: Update Username
+router.put('/users/:id/update-username', verifyToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'SuperAdmin' && req.user.role !== 'Admin') {
+            return res.status(403).json({ message: 'Access Denied: Only Admins can update usernames.' });
+        }
+        const { id } = req.params;
+        const { username } = req.body;
+
+        const targetUser = await User.findById(id);
+        if (!targetUser) return res.status(404).json({ message: 'User not found' });
+
+        if (targetUser.role === 'SuperAdmin' && req.user.role !== 'SuperAdmin') {
+            return res.status(403).json({ message: 'Access Denied: You cannot change a SuperAdmin username.' });
+        }
+
+        if (!username || username.trim().length < 3) {
+            return res.status(400).json({ message: 'Username must be at least 3 characters' });
+        }
+
+        const cleanUsername = username.trim();
+
+        // Check if username exists (excluding current user)
+        const existingUser = await User.findOne({ username: cleanUsername, _id: { $ne: id } });
+        if (existingUser) {
+            return res.status(400).json({ message: 'Username already taken' });
+        }
+
+        const user = await User.findByIdAndUpdate(id, { username: cleanUsername }, { new: true }).select('-password');
+        
+        res.json({ message: 'Username updated successfully', user });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -882,6 +972,12 @@ router.delete('/users/:id', verifyToken, async (req, res) => {
         // Prevent Self-Deletion
         if (req.user.id === id) {
             return res.status(400).json({ message: 'You cannot delete yourself.' });
+        }
+
+        // Prevent Deleting another SuperAdmin
+        const targetUser = await User.findById(id);
+        if (targetUser && targetUser.role === 'SuperAdmin') {
+            return res.status(403).json({ message: 'Access Denied: You cannot delete a SuperAdmin account.' });
         }
 
         const user = await User.findByIdAndDelete(id);

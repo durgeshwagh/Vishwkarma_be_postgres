@@ -229,27 +229,6 @@ router.post('/login', async (req, res) => {
                     }
                 });
             }
-            if (username === 'durgeshwagh') { // Password check skipped for easier debugging in mock
-                 const token = jwt.sign(
-                    { id: 'mock_user_id', role: 'SuperAdmin', name: 'Durgesh Wagh' },
-                    process.env.JWT_SECRET || 'secretKey',
-                    { expiresIn: '8h' }
-                );
-                return res.json({
-                    token,
-                    user: {
-                        id: 'mock_user_id',
-                        username: 'durgeshwagh',
-                        name: 'Durgesh Wagh',
-                        role: 'SuperAdmin',
-                        email: 'durgeshwagh3@gmail.com',
-                        permissions: [],
-                        memberId: '695e43c4badddbbac604ba05',
-                        photoUrl: null,
-                        mobile: '8975828505'
-                    }
-                });
-            }
              // Default Fallback for any other user in mock mode (Optional, or just fail)
              // Let's allow generic login for testing frontend
              const token = jwt.sign(

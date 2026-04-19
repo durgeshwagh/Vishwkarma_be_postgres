@@ -80,7 +80,6 @@ UnionSchema.virtual('spouses').get(function () {
 });
 
 // Indexes for performance
-UnionSchema.index({ union_id: 1 });
 UnionSchema.index({ husband_id: 1 });
 UnionSchema.index({ wife_id: 1 });
 UnionSchema.index({ 'verification.status': 1 });

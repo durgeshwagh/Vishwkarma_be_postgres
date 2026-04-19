@@ -25,10 +25,7 @@ UserSchema.virtual('displayName').get(function () {
 });
 
 // Indexes for optimized queries
-UserSchema.index({ email: 1 }, { unique: true, sparse: true }); // Login by email
 UserSchema.index({ mobile: 1 }, { sparse: true }); // Login/search by mobile
-UserSchema.index({ username: 1 }, { unique: true }); // Login by username
-UserSchema.index({ role: 1, isVerified: 1 }); // Admin queries for user management
 UserSchema.index({ role: 1, isVerified: 1 }); // Admin queries for user management
 UserSchema.index({ isVerified: 1 }); // Pending approvals query
 UserSchema.index({ memberId: 1 }); // Optimize registration status check

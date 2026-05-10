@@ -47,11 +47,7 @@ app.use((req, res, next) => {
 });
 
 app.use(compression());
-app.use(cors({
-    origin: ['http://localhost:4200', 'http://localhost:8100',
-        'http://localhost:8080','https://www.vishwasetu.co.in'],
-    credentials: true
-}));
+app.use(cors()); // Allow all origins for easier deployment, can be hardened later
 
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
@@ -156,20 +152,22 @@ app.get('/', (req, res) => {
     res.send('Backend Modified: 2026-02-14 23:40 GMT (Dual Login Ready)');
 });
 
-// Database Connection & Server Start
-sequelize.authenticate()
-    .then(() => {
-        console.log('PostgreSQL Connected');
-        // sync({ alter: true }) will update the schema to match the models
-        return sequelize.sync({ alter: true });
-    })
-    .then(() => {
-        console.log('Database Synced');
-        app.listen(PORT, () => {
-            console.log(`Server running on port ${PORT}`);
+// Start Server Immediately to avoid Render 504 Gateway Timeout
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    
+    // Connect to Database Asynchronously
+    console.log('Connecting to PostgreSQL...');
+    sequelize.authenticate()
+        .then(() => {
+            console.log('PostgreSQL Connected');
+            return sequelize.sync({ alter: true });
+        })
+        .then(() => {
+            console.log('Database Synced');
+        })
+        .catch(err => {
+            console.error('PostgreSQL Connection Failed:', err.message);
+            // Don't exit process, allow server to stay up for debugging
         });
-    })
-    .catch(err => {
-        console.error('PostgreSQL Connection Failed:', err.message);
-        process.exit(1);
-    });
+});

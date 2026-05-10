@@ -169,4 +169,9 @@ router.get('/profile', verifyToken, async (req, res) => {
     }
 });
 
+// Public Key for Password Encryption
+router.get('/public-key', (req, res) => {
+    res.json({ publicKey });
+});
+
 module.exports = router;

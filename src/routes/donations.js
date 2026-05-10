@@ -1,12 +1,12 @@
 const express = require('express');
+const router = express.Router();
 const Donation = require('../models/Donation');
 const { verifyToken, checkPermission } = require('../middleware/authMiddleware');
-const router = express.Router();
 
 // Get All Donations
 router.get('/', async (req, res) => {
     try {
-        const donations = await Donation.find().sort({ date: -1 });
+        const donations = await Donation.findAll({ order: [['date', 'DESC']] });
         res.json(donations);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -16,9 +16,8 @@ router.get('/', async (req, res) => {
 // Add Donation
 router.post('/', verifyToken, async (req, res) => {
     try {
-        const newDonation = new Donation(req.body);
-        const savedDonation = await newDonation.save();
-        res.status(201).json(savedDonation);
+        const newDonation = await Donation.create(req.body);
+        res.status(201).json(newDonation);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -27,7 +26,8 @@ router.post('/', verifyToken, async (req, res) => {
 // Delete Donation
 router.delete('/:id', verifyToken, async (req, res) => {
     try {
-        await Donation.findByIdAndDelete(req.params.id);
+        const deleted = await Donation.destroy({ where: { id: req.params.id } });
+        if (!deleted) return res.status(404).json({ message: 'Donation not found' });
         res.json({ message: 'Donation deleted successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });

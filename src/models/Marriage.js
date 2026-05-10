@@ -1,17 +1,40 @@
-const mongoose = require('mongoose');
+const { DataTypes } = require('sequelize');
+const sequelize = require('../config/database');
 
-const MarriageSchema = new mongoose.Schema({
-    husbandId: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', required: true },
-    wifeId: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', required: true },
-    marriageDate: { type: Date },
-    status: { type: String, enum: ['Active', 'Divorced', 'Widowed'], default: 'Active' },
+const Marriage = sequelize.define('Marriage', {
+    id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
+    },
+    husbandId: {
+        type: DataTypes.UUID,
+        allowNull: false,
+        field: 'husband_id'
+    },
+    wifeId: {
+        type: DataTypes.UUID,
+        allowNull: false,
+        field: 'wife_id'
+    },
+    marriageDate: {
+        type: DataTypes.DATE,
+        field: 'marriage_date'
+    },
+    status: {
+        type: DataTypes.ENUM('Active', 'Divorced', 'Widowed'),
+        defaultValue: 'Active'
+    }
 }, {
-    timestamps: true
+    tableName: 'marriages',
+    timestamps: true,
+    underscored: true,
+    indexes: [
+        {
+            unique: true,
+            fields: ['husband_id', 'wife_id']
+        }
+    ]
 });
 
-// Index for fast lookups
-MarriageSchema.index({ husbandId: 1 });
-MarriageSchema.index({ wifeId: 1 });
-MarriageSchema.index({ husbandId: 1, wifeId: 1 }, { unique: true });
-
-module.exports = mongoose.model('Marriage', MarriageSchema);
+module.exports = Marriage;

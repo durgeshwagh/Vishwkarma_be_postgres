@@ -1,18 +1,53 @@
-const mongoose = require('mongoose');
+const { DataTypes } = require('sequelize');
+const sequelize = require('../config/database');
 
-const BoardMemberSchema = new mongoose.Schema({
-    year: { type: String, required: true }, // e.g. "2002" or "2002-2005"
-    role: { type: String, required: true }, // e.g. "President"
-    name: { type: String, required: true },
-    description: { type: String }, // New field for bio/details
-    memberId: { type: String }, // Optional link to Member ID (e.g. M2025001)
-    photoUrl: { type: String },
-    photoId: { type: String }, // Cloudinary Public ID
-    contact: { type: String },
-    city: { type: String },
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+const BoardMember = sequelize.define('BoardMember', {
+    id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
+    },
+    year: {
+        type: DataTypes.STRING,
+        allowNull: false
+    },
+    role: {
+        type: DataTypes.STRING,
+        allowNull: false
+    },
+    name: {
+        type: DataTypes.STRING,
+        allowNull: false
+    },
+    description: {
+        type: DataTypes.TEXT
+    },
+    memberId: {
+        type: DataTypes.STRING,
+        field: 'member_id'
+    },
+    photoUrl: {
+        type: DataTypes.STRING,
+        field: 'photo_url'
+    },
+    photoId: {
+        type: DataTypes.STRING,
+        field: 'photo_id'
+    },
+    contact: {
+        type: DataTypes.STRING
+    },
+    city: {
+        type: DataTypes.STRING
+    },
+    createdBy: {
+        type: DataTypes.UUID,
+        field: 'created_by'
+    }
 }, {
-    timestamps: true
+    tableName: 'board_members',
+    timestamps: true,
+    underscored: true
 });
 
-module.exports = mongoose.model('BoardMember', BoardMemberSchema);
+module.exports = BoardMember;

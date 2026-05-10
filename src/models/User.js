@@ -1,42 +1,76 @@
-const mongoose = require('mongoose');
+const { DataTypes } = require('sequelize');
+const sequelize = require('../config/database');
 
-const UserSchema = new mongoose.Schema({
-    username: { type: String, required: true, unique: true },
-    password: { type: String, required: true }, // Hashed
-    email: { type: String, unique: true, sparse: true },
-    mobile: { type: String },
-    role: { type: String, enum: ['SuperAdmin', 'Admin', 'Member'], default: 'Member' },
-    isVerified: { type: Boolean, default: false },
-    isActive: { type: Boolean, default: true }, // Added for enable/disable functionality
-    permissions: { type: [String], default: [] }, // e.g. ['create', 'read', 'update', 'delete']
-    otp: { type: String, select: false }, // Don't return by default
-    otpExpires: { type: Date, select: false },
-    name: { type: String },
-    memberId: { type: String }
+const User = sequelize.define('User', {
+    id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
+    },
+    username: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        unique: true
+    },
+    password: {
+        type: DataTypes.STRING,
+        allowNull: false
+    },
+    email: {
+        type: DataTypes.STRING,
+        unique: true,
+        allowNull: true
+    },
+    mobile: {
+        type: DataTypes.STRING
+    },
+    role: {
+        type: DataTypes.STRING,
+        defaultValue: 'Member',
+        validate: {
+            isIn: [['SuperAdmin', 'Admin', 'Member']]
+        }
+    },
+    isVerified: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+        field: 'is_verified'
+    },
+    isActive: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: true,
+        field: 'is_active'
+    },
+    permissions: {
+        type: DataTypes.TEXT,
+        get() {
+            const val = this.getDataValue('permissions');
+            return val ? JSON.parse(val) : [];
+        },
+        set(val) {
+            this.setDataValue('permissions', JSON.stringify(val || []));
+        }
+    },
+    otp: {
+        type: DataTypes.STRING,
+        allowNull: true
+    },
+    otpExpires: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        field: 'otp_expires'
+    },
+    name: {
+        type: DataTypes.STRING
+    },
+    memberId: {
+        type: DataTypes.STRING,
+        field: 'member_id'
+    }
 }, {
+    tableName: 'users',
     timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
+    underscored: true
 });
 
-// Virtual field for display name with fallback logic
-UserSchema.virtual('displayName').get(function () {
-    return this.name || this.username;
-});
-
-// Indexes for optimized queries
-UserSchema.index({ mobile: 1 }, { sparse: true }); // Login/search by mobile
-UserSchema.index({ role: 1, isVerified: 1 }); // Admin queries for user management
-UserSchema.index({ isVerified: 1 }); // Pending approvals query
-UserSchema.index({ memberId: 1 }); // Optimize registration status check
-
-// Full Text Search Index
-UserSchema.index({
-    name: 'text',
-    username: 'text',
-    mobile: 'text',
-    email: 'text',
-    memberId: 'text'
-});
-
-module.exports = mongoose.model('User', UserSchema);
+module.exports = User;

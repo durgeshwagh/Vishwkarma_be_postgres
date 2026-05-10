@@ -1,124 +1,67 @@
 const express = require('express');
 const router = express.Router();
-
-/**
- * @swagger
- * tags:
- *   name: Admin
- *   description: Admin Management
- */
 const User = require('../models/User');
 const { verifyToken } = require('../middleware/authMiddleware');
 const PERMISSIONS = require('../config/permissions');
+const { Op } = require('sequelize');
 
-// Middleware to check if user is Admin or SuperAdmin
 const verifyAdmin = async (req, res, next) => {
-    try {
-        if (!req.user || !['Admin', 'SuperAdmin'].includes(req.user.role)) {
-            return res.status(403).json({ message: 'Access Denied: Admins Only' });
-        }
-        next();
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+    if (!req.user || !['Admin', 'SuperAdmin'].includes(req.user.role)) {
+        return res.status(403).json({ message: 'Access Denied: Admins Only' });
     }
+    next();
 };
 
-/**
- * @swagger
- * /api/admin/users:
- *   get:
- *     summary: Get all users (Admin only)
- *     tags: [Admin]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: search
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: List of users
- */
+// Get all users
 router.get('/users', verifyToken, verifyAdmin, async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 20;
         const search = req.query.search || '';
-        
-        console.log(`[Admin] Get Users - Page: ${page}, Limit: ${limit}, Search: '${search}', Status: ${req.query.status}`);
+        const offset = (page - 1) * limit;
 
-        const query = {};
-
+        let where = {};
         if (search) {
-             // Performance Optimization: Use $text search if possible, otherwise regex
-             // Note: $text requires Whole Words. For partial matches, we still need regex.
-             // We prioritize Text Search score if available.
-             query.$or = [
-                 { $text: { $search: search } }, // Uses Text Index (Fast)
-                 { name: { $regex: search, $options: 'i' } },
-                 { username: { $regex: search, $options: 'i' } },
-                 { memberId: { $regex: search, $options: 'i' } }
-             ];
-             // Since we added Text Index to User.js, this will help.
+            where[Op.or] = [
+                { name: { [Op.iLike]: `%${search}%` } },
+                { username: { [Op.iLike]: `%${search}%` } },
+                { memberId: { [Op.iLike]: `%${search}%` } }
+            ];
         }
 
-        // Add Status Filter
         const status = req.query.status ? req.query.status.trim() : '';
         if (status === 'pending') {
-            query.isVerified = { $ne: true }; // Covers false, null, and undefined
+            where.isVerified = false;
         } else if (status === 'verified') {
-            query.isVerified = true;
+            where.isVerified = true;
         }
 
-
-        console.log('[Admin] MongoDB Query:', JSON.stringify(query));
-
-        const users = await User.find(query)
-            .select('-password -otp -otpExpires') // Exclude sensitive fields
-            .sort({ createdAt: -1 })
-            .limit(limit * 1)
-            .skip((page - 1) * limit);
-
-        const total = await User.countDocuments(query);
+        const { count, rows } = await User.findAndCountAll({
+            where,
+            attributes: { exclude: ['password', 'otp', 'otpExpires'] },
+            order: [['createdAt', 'DESC']],
+            limit,
+            offset
+        });
 
         res.json({
-            users,
-            totalPages: Math.ceil(total / limit),
+            users: rows,
+            totalPages: Math.ceil(count / limit),
             currentPage: page,
-            totalUsers: total
+            totalUsers: count
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-/**
- * @swagger
- * /api/admin/users/{id}/approve:
- *   put:
- *     summary: Toggle user approval status
- *     tags: [Admin]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: User status updated
- */
+// Toggle user approval
 router.put('/users/:id/approve', verifyToken, verifyAdmin, async (req, res) => {
     try {
-        const user = await User.findById(req.params.id);
+        const user = await User.findByPk(req.params.id);
         if (!user) return res.status(404).json({ message: 'User not found' });
-
-        user.isVerified = !user.isVerified; // Toggle status
+        user.isVerified = !user.isVerified;
         await user.save();
-
         res.json({ message: `User ${user.isVerified ? 'Approved' : 'Unapproved'} successfully`, user });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -129,22 +72,10 @@ router.put('/users/:id/approve', verifyToken, verifyAdmin, async (req, res) => {
 router.put('/users/:id/role', verifyToken, verifyAdmin, async (req, res) => {
     try {
         const { role } = req.body;
-        if (!['Admin', 'SuperAdmin', 'Member'].includes(role)) {
-            return res.status(400).json({ message: 'Invalid Role' });
-        }
-
-        const user = await User.findById(req.params.id);
+        const user = await User.findByPk(req.params.id);
         if (!user) return res.status(404).json({ message: 'User not found' });
-
-        // Prevent modifying own role to avoid accidental lockout (optional check)
-        if (user._id.toString() === req.user.id && role !== 'SuperAdmin') {
-            // Allow SuperAdmin to demote themselves? Maybe not safe.
-            // For now, let's allow it but warn.
-        }
-
         user.role = role;
         await user.save();
-
         res.json({ message: 'Role updated successfully', user });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -154,59 +85,27 @@ router.put('/users/:id/role', verifyToken, verifyAdmin, async (req, res) => {
 // Update Permissions
 router.put('/users/:id/permissions', verifyToken, verifyAdmin, async (req, res) => {
     try {
-        const { permissions, role, memberId } = req.body;
-
-        const updateData = {};
-        if (permissions) updateData.permissions = permissions;
-        if (role) updateData.role = role;
-        // Allow linking (string) or unlinking (null)
-        if (memberId !== undefined) updateData.memberId = memberId;
-
-        const user = await User.findByIdAndUpdate(req.params.id, updateData, { new: true }).select('-password');
+        const user = await User.findByPk(req.params.id);
         if (!user) return res.status(404).json({ message: 'User not found' });
-
-        res.json({ message: 'Permissions and details updated', user });
+        await user.update(req.body);
+        res.json({ message: 'Permissions updated', user });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Get Available Permissions Config
+// Get Permissions Config
 router.get('/config/permissions', verifyToken, verifyAdmin, (req, res) => {
     res.json(PERMISSIONS);
 });
 
-/**
- * @swagger
- * /api/admin/users/{id}:
- *   delete:
- *     summary: Delete a user (Admin only)
- *     tags: [Admin]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: User deleted successfully
- */
+// Delete User
 router.delete('/users/:id', verifyToken, verifyAdmin, async (req, res) => {
     try {
-        const { id } = req.params;
-
-        // Prevent Self-Deletion
-        if (req.user.id === id) {
-            return res.status(400).json({ message: 'You cannot delete yourself.' });
-        }
-
-        const user = await User.findByIdAndDelete(id);
-        if (!user) return res.status(404).json({ message: 'User not found' });
-
-        res.json({ message: 'User deleted successfully', userId: id });
+        if (req.user.id === req.params.id) return res.status(400).json({ message: 'Cannot delete yourself' });
+        const deleted = await User.destroy({ where: { id: req.params.id } });
+        if (!deleted) return res.status(404).json({ message: 'User not found' });
+        res.json({ message: 'User deleted successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

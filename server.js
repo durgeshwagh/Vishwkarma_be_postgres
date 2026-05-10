@@ -1,6 +1,7 @@
 const express = require('express');
 // Trigger restart for auth changes
-const mongoose = require('mongoose');
+const sequelize = require('./src/config/database');
+require('./src/models'); // Load all models and associations
 const cors = require('cors');
 const bodyParser = require('body-parser');
 require('dotenv').config();
@@ -22,7 +23,7 @@ const utilRoutes = require('./src/routes/utils');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/community_app_db';
+// MONGO_URI removed, using DATABASE_URL from .env
 
 const compression = require('compression');
 const helmet = require('helmet');
@@ -155,27 +156,20 @@ app.get('/', (req, res) => {
     res.send('Backend Modified: 2026-02-14 23:40 GMT (Dual Login Ready)');
 });
 
-// Database Connection
 // Database Connection & Server Start
-mongoose.connect(MONGO_URI, {
-    serverSelectionTimeoutMS: 5000 // Fail fast if no DB (5s instead of 30s)
-})
+sequelize.authenticate()
     .then(() => {
-        console.log('MongoDB Connected');
-        global.useMockDb = false;
-
-        // Start Server ONLY after DB is connected
+        console.log('PostgreSQL Connected');
+        // sync({ alter: true }) will update the schema to match the models
+        return sequelize.sync({ alter: true });
+    })
+    .then(() => {
+        console.log('Database Synced');
         app.listen(PORT, () => {
             console.log(`Server running on port ${PORT}`);
         });
     })
     .catch(err => {
-        console.error('MongoDB Connection Failed:', err.message);
-        console.log('Falling back to In-Memory Mock Database (Critical Failure)');
-        global.useMockDb = true;
-
-        // Start server in Mock Mode if DB fails
-        app.listen(PORT, () => {
-            console.log(`Server running on port ${PORT} (Mock DB Mode)`);
-        });
+        console.error('PostgreSQL Connection Failed:', err.message);
+        process.exit(1);
     });

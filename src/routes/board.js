@@ -1,174 +1,60 @@
 const express = require('express');
 const router = express.Router();
-const path = require('path');
-
-/**
- * @swagger
- * tags:
- *   name: Board
- *   description: Committee/Board Members
- */
 const BoardMember = require('../models/BoardMember');
-const { verifyToken } = require('../middleware/authMiddleware');
+const { verifyToken, checkPermission } = require('../middleware/authMiddleware');
 const { upload } = require('../config/cloudinary');
 
-/**
- * @swagger
- * /api/board:
- *   get:
- *     summary: Get board members
- *     tags: [Board]
- *     parameters:
- *       - in: query
- *         name: year
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: List of board members
- */
+// Get all board members
 router.get('/', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 50;
-        const skip = (page - 1) * limit;
+        const limit = parseInt(req.query.limit) || 10;
+        const offset = (page - 1) * limit;
 
-        // Build Query
-        const query = {};
-        if (req.query.year) {
-            query.year = { $regex: req.query.year, $options: 'i' };
-        }
-        if (req.query.search) {
-            const searchRegex = new RegExp(req.query.search, 'i');
-            query.$or = [
-                { name: searchRegex },
-                { role: searchRegex },
-                { city: searchRegex }
-            ];
-        }
+        console.log(`[Board API] Fetching board members (Page: ${page}, Limit: ${limit})...`);
+        
+        const { count, rows: members } = await BoardMember.findAndCountAll({
+            order: [['year', 'DESC']],
+            limit,
+            offset
+        });
 
-        const total = await BoardMember.countDocuments(query);
-        const members = await BoardMember.find(query)
-            .sort({ year: -1, createdAt: -1 })
-            .skip(skip)
-            .limit(limit);
-
+        console.log(`[Board API] Found ${count} members total`);
+        
         res.json({
             data: members,
-            currentPage: page,
-            totalPages: Math.ceil(total / limit),
-            totalMembers: total
+            totalPages: Math.ceil(count / limit),
+            total: count,
+            page
         });
     } catch (err) {
+        console.error('[Board API] Error:', err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// Get Single Board Member
-router.get('/:id', async (req, res) => {
+// Create board member
+router.post('/', verifyToken, checkPermission('board.manage'), upload.single('photo'), async (req, res) => {
     try {
-        const member = await BoardMember.findById(req.params.id);
-        if (!member) return res.status(404).json({ message: 'Member not found' });
-        res.json(member);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-/**
- * @swagger
- * /api/board:
- *   post:
- *     summary: Add board member
- *     tags: [Board]
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         multipart/form-data:
- *           schema:
- *             type: object
- *             required:
- *               - name
- *               - role
- *               - year
- *             properties:
- *               name:
- *                 type: string
- *               role:
- *                 type: string
- *               year:
- *                 type: string
- *     responses:
- *       201:
- *         description: Board member added
- */
-router.post('/', verifyToken, upload.single('photo'), async (req, res) => {
-    try {
-        if (!['Admin', 'SuperAdmin'].includes(req.user.role)) {
-            return res.status(403).json({ message: 'Access Denied' });
-        }
-
-        const { year, role, name, description, memberId, contact, city } = req.body;
-        let photoUrl = '';
-        let photoId = '';
-
+        const data = { ...req.body };
         if (req.file) {
-            photoUrl = req.file.path;
-            photoId = req.file.filename;
+            data.photoUrl = req.file.path;
+            data.photoId = req.file.filename;
         }
-
-        const newMember = new BoardMember({
-            year,
-            role,
-            name,
-            description,
-            memberId,
-            contact,
-            city,
-            photoUrl,
-            photoId,
-            createdBy: req.user.id
-        });
-
-        await newMember.save();
-        res.status(201).json(newMember);
+        data.createdBy = req.user.id;
+        const newBoardMember = await BoardMember.create(data);
+        res.status(201).json(newBoardMember);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Update Board Member
-router.put('/:id', verifyToken, upload.single('photo'), async (req, res) => {
+// Delete board member
+router.delete('/:id', verifyToken, checkPermission('board.manage'), async (req, res) => {
     try {
-        if (!['Admin', 'SuperAdmin'].includes(req.user.role)) {
-            return res.status(403).json({ message: 'Access Denied' });
-        }
-
-        const { id } = req.params;
-        const updates = req.body;
-
-        if (req.file) {
-            updates.photoUrl = req.file.path;
-            updates.photoId = req.file.filename;
-        }
-
-        const updatedMember = await BoardMember.findByIdAndUpdate(id, updates, { new: true });
-        res.json(updatedMember);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Delete Board Member
-router.delete('/:id', verifyToken, async (req, res) => {
-    try {
-        if (!['Admin', 'SuperAdmin'].includes(req.user.role)) {
-            return res.status(403).json({ message: 'Access Denied' });
-        }
-        await BoardMember.findByIdAndDelete(req.params.id);
-        res.json({ message: 'Record deleted successfully' });
+        const deleted = await BoardMember.destroy({ where: { id: req.params.id } });
+        if (!deleted) return res.status(404).json({ message: 'Board member not found' });
+        res.json({ message: 'Board member deleted successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

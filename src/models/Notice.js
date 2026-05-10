@@ -1,32 +1,57 @@
-const mongoose = require('mongoose');
+const { DataTypes } = require('sequelize');
+const sequelize = require('../config/database');
 
-const NoticeSchema = new mongoose.Schema({
-    title: { type: String, required: true },
-    message: { type: String, required: true },
-    fileUrl: { type: String }, // Optional attachment (Patrika/Image)
-    fileId: { type: String }, // Cloudinary Public ID
+const Notice = sequelize.define('Notice', {
+    id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
+    },
+    title: {
+        type: DataTypes.STRING,
+        allowNull: false
+    },
+    message: {
+        type: DataTypes.TEXT,
+        allowNull: false
+    },
+    fileUrl: {
+        type: DataTypes.STRING,
+        field: 'file_url'
+    },
+    fileId: {
+        type: DataTypes.STRING,
+        field: 'file_id'
+    },
     type: {
-        type: String,
-        enum: ['General', 'Event', 'Urgent'],
-        default: 'General'
+        type: DataTypes.ENUM('General', 'Event', 'Urgent'),
+        defaultValue: 'General'
     },
     target: {
-        type: String,
-        enum: ['All', 'Selected'],
-        default: 'All'
+        type: DataTypes.ENUM('All', 'Selected'),
+        defaultValue: 'All'
     },
-    recipients: [{ type: String }], // Array of Member IDs if target is 'Selected'
-    readBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // Track who has read this notice
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+    recipients: {
+        type: DataTypes.JSONB, // Array of Member IDs
+        defaultValue: []
+    },
+    readBy: {
+        type: DataTypes.JSONB, // Array of User IDs
+        defaultValue: []
+    },
+    createdBy: {
+        type: DataTypes.UUID,
+        field: 'created_by'
+    }
 }, {
-    timestamps: true
+    tableName: 'notices',
+    timestamps: true,
+    underscored: true,
+    indexes: [
+        { fields: ['created_at'] },
+        { fields: ['type', 'created_at'] },
+        { fields: ['target', 'created_at'] }
+    ]
 });
 
-// Indexes for optimized queries
-NoticeSchema.index({ createdAt: -1 }); // Recent notices first
-NoticeSchema.index({ type: 1, createdAt: -1 }); // Filter by type + sort
-NoticeSchema.index({ readBy: 1 }); // Unread notices query
-NoticeSchema.index({ target: 1, createdAt: -1 }); // Target filter + sort
-NoticeSchema.index({ createdAt: -1, _id: 1 }); // Pagination optimization
-
-module.exports = mongoose.model('Notice', NoticeSchema);
+module.exports = Notice;

@@ -1,14 +1,41 @@
-const mongoose = require('mongoose');
+const { DataTypes } = require('sequelize');
+const sequelize = require('../config/database');
 
-const DonationSchema = new mongoose.Schema({
-    memberId: { type: String, required: false }, // Can be null if external donation
-    memberName: { type: String, required: true },
-    amount: { type: Number, required: true },
-    date: { type: Date, default: Date.now },
-    type: { type: String, enum: ['General', 'Event', 'Temple', 'Education'], default: 'General' },
-    notes: { type: String }
+const Donation = sequelize.define('Donation', {
+    id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
+    },
+    memberId: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        field: 'member_id'
+    },
+    memberName: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        field: 'member_name'
+    },
+    amount: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: false
+    },
+    date: {
+        type: DataTypes.DATE,
+        defaultValue: DataTypes.NOW
+    },
+    type: {
+        type: DataTypes.ENUM('General', 'Event', 'Temple', 'Education'),
+        defaultValue: 'General'
+    },
+    notes: {
+        type: DataTypes.TEXT
+    }
 }, {
-    timestamps: true
+    tableName: 'donations',
+    timestamps: true,
+    underscored: true
 });
 
-module.exports = mongoose.model('Donation', DonationSchema);
+module.exports = Donation;

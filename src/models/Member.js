@@ -1,182 +1,171 @@
-const mongoose = require('mongoose');
+const { DataTypes } = require('sequelize');
+const sequelize = require('../config/database');
 
-const MemberSchema = new mongoose.Schema({
-    // ===============================
-    // Core Identity
-    // ===============================
-    memberId: { type: String, required: true, unique: true, index: true },
-    
-    // ===============================
-    // Personal Information (Flattened for Performance)
-    // ===============================
-    firstName: { type: String, required: true },
-    middleName: { type: String },
-    lastName: { type: String, required: true },
-    fullName: { type: String, index: true }, // Pre-calculated: "First Middle Last"
-    prefix: { type: String }, // श्री, सौ, श्रीमती, स्व.
-    gender: { type: String, enum: ['Male', 'Female'], required: true, index: true },
-    dob: { type: Date, required: true },
-    lifeStatus: { type: String, enum: ['Alive', 'Deceased'], default: 'Alive' },
-    maritalStatus: { type: String, enum: ['Single', 'Married', 'Divorced', 'Widowed'], index: true },
-    maidenName: { type: String, index: true },
-    
+const Member = sequelize.define('Member', {
+    id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
+    },
+    memberId: {
+        type: DataTypes.STRING,
+        unique: true,
+        allowNull: false,
+        field: 'member_id'
+    },
+    firstName: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        field: 'first_name'
+    },
+    middleName: {
+        type: DataTypes.STRING,
+        field: 'middle_name'
+    },
+    lastName: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        field: 'last_name'
+    },
+    fullName: {
+        type: DataTypes.STRING,
+        field: 'full_name'
+    },
+    prefix: {
+        type: DataTypes.STRING
+    },
+    gender: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        validate: {
+            isIn: [['Male', 'Female']]
+        }
+    },
+    dob: {
+        type: DataTypes.DATE,
+        allowNull: false
+    },
+    lifeStatus: {
+        type: DataTypes.STRING,
+        defaultValue: 'Alive',
+        field: 'life_status',
+        validate: {
+            isIn: [['Alive', 'Deceased']]
+        }
+    },
+    maritalStatus: {
+        type: DataTypes.STRING,
+        field: 'marital_status',
+        validate: {
+            isIn: [['Single', 'Married', 'Divorced', 'Widowed']]
+        }
+    },
+    maidenName: {
+        type: DataTypes.STRING,
+        field: 'maiden_name'
+    },
     contact: {
-        mobile: { type: String, index: true },
-        email: { type: String },
-        whatsapp: { type: String }
+        type: DataTypes.TEXT,
+        get() {
+            const val = this.getDataValue('contact');
+            return val ? JSON.parse(val) : {};
+        },
+        set(val) {
+            this.setDataValue('contact', JSON.stringify(val || {}));
+        }
     },
-
-    education: { type: String },
-    occupation: { type: String },
-    occupationType: { type: String, enum: ['Job', 'Business', 'Farmer', 'Student', 'Housewife', 'Retired', 'Other', ''] },
-    jobType: { type: String, enum: ['Software Engineer', 'Teacher', 'Government Employee', 'Private Company Employee', 'Doctor', 'Nurse', 'Accountant', 'Clerk', 'Security Guard', 'Driver', 'Other', ''] },
-    photoUrl: { type: String },
-    photoId: { type: String }, // Cloudinary Public ID
-    showOnMatrimony: { type: Boolean, default: false },
-    blood_group: { type: String },
-    height: { type: String },
-    hobbies: [{ type: String }],
-    
-    // ===============================
-    // Geography (Indexed for Search)
-    // ===============================
-    city: { type: String, index: true }, // Syncs with taluka
-    village: { type: String, index: true },
-    state: { type: String, index: true },    // Added top-level index
-    district: { type: String, index: true }, // Added top-level index
-    taluka: { type: String, index: true },   // Added top-level index
     geography: {
-        pincode: { type: Number },
-        state: { type: String },
-        district: { type: String },
-        taluka: { type: String },
-        village: { type: String },
-        full_address: { type: String }
+        type: DataTypes.TEXT,
+        get() {
+            const val = this.getDataValue('geography');
+            return val ? JSON.parse(val) : {};
+        },
+        set(val) {
+            this.setDataValue('geography', JSON.stringify(val || {}));
+        }
     },
-
-    // ===============================
-    // Relationships (Optimized Refs)
-    // ===============================
-    father: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null },
-    mother: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null },
-    spouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Member', default: null },
-    children: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Member' }],
+    education: { type: DataTypes.STRING },
+    occupation: { type: DataTypes.STRING },
+    occupationType: { type: DataTypes.STRING, field: 'occupation_type' },
+    jobType: { type: DataTypes.STRING, field: 'job_type' },
+    photoUrl: { type: DataTypes.STRING, field: 'photo_url' },
+    photoId: { type: DataTypes.STRING, field: 'photo_id' },
+    showOnMatrimony: { type: DataTypes.BOOLEAN, defaultValue: false, field: 'show_on_matrimony' },
+    bloodGroup: { type: DataTypes.STRING, field: 'blood_group' },
+    height: { type: DataTypes.STRING },
+    hobbies: { 
+        type: DataTypes.TEXT,
+        get() {
+            const val = this.getDataValue('hobbies');
+            return val ? JSON.parse(val) : [];
+        },
+        set(val) {
+            this.setDataValue('hobbies', JSON.stringify(val || []));
+        }
+    },
     
-    // String MemberIds for easier frontend access (e.g., "M0001")
-    fatherMemberId: { type: String, index: true },
-    motherMemberId: { type: String, index: true },
-    spouseMemberId: { type: String, index: true },
+    // Geographical shortcuts (for faster lookups)
+    city: { type: DataTypes.STRING },
+    village: { type: DataTypes.STRING },
+    state: { type: DataTypes.STRING },
+    district: { type: DataTypes.STRING },
+    taluka: { type: DataTypes.STRING },
 
-    // ===============================
-    // Family Grouping & Linkage
-    // ===============================
-    familyId: { type: String, index: true },
-    isPrimary: { type: Boolean, default: false },
-    lineage_links: {
-        parental_union_id: { type: String, index: true },
-        immediate_relations: { type: Object },
-        extended_network: { type: Object }
+    // Relationships
+    fatherMemberId: { type: DataTypes.STRING, field: 'father_member_id' },
+    motherMemberId: { type: DataTypes.STRING, field: 'mother_member_id' },
+    spouseMemberId: { type: DataTypes.STRING, field: 'spouse_member_id' },
+
+    // Actual Foreign Keys (UUIDs)
+    fatherId: { type: DataTypes.UUID, field: 'father_id' },
+    motherId: { type: DataTypes.UUID, field: 'mother_id' },
+    spouseId: { type: DataTypes.UUID, field: 'spouse' }, // spouse field stores the ID of the spouse member
+
+    familyId: { type: DataTypes.STRING, field: 'family_id' },
+    isPrimary: { type: DataTypes.BOOLEAN, defaultValue: false, field: 'is_primary' },
+    
+    verificationStatus: {
+        type: DataTypes.STRING,
+        defaultValue: 'Pending',
+        field: 'verification_status',
+        validate: {
+            isIn: [['Pending', 'Approved', 'Rejected']]
+        }
     },
+    verifiedAt: { type: DataTypes.DATE, field: 'verified_at' },
+    rejectionReason: { type: DataTypes.STRING, field: 'rejection_reason' },
 
-    // ===============================
-    // Verification & Metadata
-    // ===============================
-    verification: {
-        status: { type: String, enum: ['Pending', 'Approved', 'Rejected'], default: 'Pending' },
-        verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-        verifiedAt: { type: Date },
-        rejectionReason: { type: String }
+    // Virtuals for Frontend Compatibility
+    age: {
+        type: DataTypes.VIRTUAL,
+        get() {
+            if (!this.dob) return null;
+            return Math.floor((Date.now() - new Date(this.dob)) / (31557600000));
+        }
     },
-
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
-
-    // ===============================
-    // Legacy Compatibility (Hidden/Internal)
-    // ===============================
-    personal_info: { type: Object } // Store old nested data if migration is pending
+    // No virtuals needed for IDs as they are now standardized attributes
 }, {
+    tableName: 'members',
     timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true },
-    versionKey: false
+    underscored: true
 });
 
-// Virtual for age calculation
-MemberSchema.virtual('age').get(function () {
-    if (!this.dob) return null;
-    return Math.floor((Date.now() - new Date(this.dob)) / (31557600000));
-});
-
-// Legacy Compatibility Virtuals (for frontend support)
-MemberSchema.virtual('fatherId').get(function() { return this.father; });
-MemberSchema.virtual('motherId').get(function() { return this.mother; });
-MemberSchema.virtual('spouseId').get(function() { return this.spouse; });
-
-// ---------------------------------------------------------
-// PERFORMANCE INDEXES
-// ---------------------------------------------------------
-
-// Compound Index for List/Table Filtering (Primary Search Patterns)
-MemberSchema.index({ familyId: 1, isPrimary: -1 });
-MemberSchema.index({ isPrimary: 1, createdAt: -1 }); // Optimized for Primary Member List (Default Sort)
-MemberSchema.index({ isPrimary: 1, lifeStatus: 1, fullName: 1 }); // Optimized for Name Sort (with Alive filter)
-MemberSchema.index({ isPrimary: 1, lifeStatus: 1 }); // Optimized for Count
-MemberSchema.index({ lifeStatus: 1, gender: 1, maritalStatus: 1 });
-
-// Compound Index for Geography Filtering
-MemberSchema.index({ 'geography.state': 1, 'geography.district': 1, 'geography.taluka': 1 });
-MemberSchema.index({ 'geography.pincode': 1 });
-
-// Optimized Matrimony Search Index (Partial)
-MemberSchema.index(
-    { showOnMatrimony: 1, gender: 1, maritalStatus: 1 },
-    { partialFilterExpression: { showOnMatrimony: true, lifeStatus: 'Alive' } }
-);
-
-// Indexes for relationship traversals (Recursive trees)
-MemberSchema.index({ father: 1 });
-MemberSchema.index({ mother: 1 });
-MemberSchema.index({ spouse: 1 });
-
-// Full-Text Search Index (For Global Search Bar)
-MemberSchema.index({
-    fullName: 'text',
-    firstName: 'text',
-    lastName: 'text',
-    village: 'text',
-    city: 'text',
-    taluka: 'text',
-    'contact.mobile': 'text',
-    memberId: 'text'
-}, {
-    weights: {
-        fullName: 15,
-        firstName: 10,
-        lastName: 10,
-        memberId: 5,
-        village: 3,
-        city: 3,
-        taluka: 3,
-        'contact.mobile': 5
-    },
-    name: 'GlobalSearchIndex',
-    default_language: 'none' // Improves support for non-English (Marathi) characters by not using a specific language's stop words/stemming
-});
-
-// Pre-save hook to ensure fullName and top-level geo fields are always accurate
-MemberSchema.pre('save', async function() {
-    if (this.firstName && this.lastName) {
-        const p = this.prefix ? this.prefix + ' ' : '';
-        const m = this.middleName ? this.middleName + ' ' : '';
-        this.fullName = `${p}${this.firstName} ${m}${this.lastName}`.replace(/\s+/g, ' ').trim();
+// Hooks for calculated fields
+Member.beforeSave((member) => {
+    if (member.firstName && member.lastName) {
+        const p = member.prefix ? member.prefix + ' ' : '';
+        const m = member.middleName ? member.middleName + ' ' : '';
+        member.fullName = `${p}${member.firstName} ${m}${member.lastName}`.replace(/\s+/g, ' ').trim();
     }
     
-    // Sync Geography shortcut fields
-    if (this.geography) {
-        if (!this.city) this.city = this.geography.taluka || this.geography.city;
-        if (!this.village) this.village = this.geography.village;
+    // Sync Geography shortcuts
+    if (member.geography) {
+        if (!member.city) member.city = member.geography.taluka || member.geography.city;
+        if (!member.village) member.village = member.geography.village;
+        if (!member.state) member.state = member.geography.state;
+        if (!member.district) member.district = member.geography.district;
+        if (!member.taluka) member.taluka = member.geography.taluka;
     }
 });
 
-module.exports = mongoose.model('Member', MemberSchema);
+module.exports = Member;

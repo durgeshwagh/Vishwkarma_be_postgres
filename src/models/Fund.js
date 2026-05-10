@@ -1,29 +1,45 @@
-const mongoose = require('mongoose');
+const { DataTypes } = require('sequelize');
+const sequelize = require('../config/database');
 
-const FundSchema = new mongoose.Schema({
-    memberId: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Member',
-        required: true
-    }, // Changed to ObjectId for better referential integrity
-    amount: { type: Number, required: true },
-    type: {
-        type: String,
-        enum: ['General', 'Temple', 'Education', 'Event'],
-        required: true
+const Fund = sequelize.define('Fund', {
+    id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
     },
-    date: { type: Date, default: Date.now },
-    description: { type: String },
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } // Audit trail
+    memberId: {
+        type: DataTypes.UUID,
+        allowNull: false,
+        field: 'member_id'
+    },
+    amount: {
+        type: DataTypes.DECIMAL(10, 2),
+        allowNull: false
+    },
+    type: {
+        type: DataTypes.ENUM('General', 'Temple', 'Education', 'Event'),
+        allowNull: false
+    },
+    date: {
+        type: DataTypes.DATE,
+        defaultValue: DataTypes.NOW
+    },
+    description: {
+        type: DataTypes.TEXT
+    },
+    createdBy: {
+        type: DataTypes.UUID,
+        field: 'created_by'
+    }
 }, {
-    timestamps: true
+    tableName: 'funds',
+    timestamps: true,
+    underscored: true,
+    indexes: [
+        { fields: ['date'] },
+        { fields: ['type', 'date'] },
+        { fields: ['member_id'] }
+    ]
 });
 
-// Indexes for optimized queries
-FundSchema.index({ date: -1 }); // Sort by date (most recent first)
-FundSchema.index({ type: 1, date: -1 }); // Filter by type + sort by date
-FundSchema.index({ memberId: 1 }); // Member's funds lookup
-FundSchema.index({ createdBy: 1 }); // Audit queries
-FundSchema.index({ createdAt: -1, _id: 1 }); // Pagination optimization
-
-module.exports = mongoose.model('Fund', FundSchema);
+module.exports = Fund;

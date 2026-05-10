@@ -12,9 +12,6 @@ const CACHE_KEYS = {
 };
 
 module.exports = {
-    /**
-     * Get cached value by key
-     */
     get: (key) => {
         const value = cache.get(key);
         if (value) {
@@ -25,40 +22,26 @@ module.exports = {
         return value;
     },
 
-    /**
-     * Set cache value with optional custom TTL
-     */
     set: (key, value, ttl = 300) => {
         cache.set(key, value, ttl);
         console.log(`[Cache SET] ${key} (TTL: ${ttl}s)`);
         return true;
     },
 
-    /**
-     * Delete specific cache key
-     */
     del: (key) => {
         cache.del(key);
         console.log(`[Cache DEL] ${key}`);
     },
 
-    /**
-     * Flush all cache
-     */
     flush: () => {
         cache.flushAll();
         console.log('[Cache] Flushed all cache');
     },
 
-    /**
-     * Invalidate dashboard stats cache
-     * Call this when members, funds, or events are modified
-     */
     invalidateDashboard: () => {
         cache.del(CACHE_KEYS.DASHBOARD_STATS);
         console.log('[Cache] Dashboard stats invalidated');
     },
 
-    // Export keys for consistency
     KEYS: CACHE_KEYS
 };

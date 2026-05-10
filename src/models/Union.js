@@ -1,94 +1,86 @@
-const mongoose = require('mongoose');
+const { DataTypes } = require('sequelize');
+const sequelize = require('../config/database');
 
-const UnionSchema = new mongoose.Schema({
-    union_id: {
-        type: String,
+const Union = sequelize.define('Union', {
+    id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true
+    },
+    unionId: {
+        type: DataTypes.STRING,
         unique: true,
-        required: true,
-        description: 'Unique identifier for this union (e.g., UNION_0001)'
+        allowNull: false,
+        field: 'union_id'
     },
-
-    // Core Union Members
-    husband_id: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Member',
-        required: true,
-        description: 'Reference to male spouse'
+    husbandId: {
+        type: DataTypes.UUID,
+        allowNull: false,
+        field: 'husband_id'
     },
-    wife_id: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Member',
-        required: true,
-        description: 'Reference to female spouse'
+    wifeId: {
+        type: DataTypes.UUID,
+        allowNull: false,
+        field: 'wife_id'
     },
-
-    // Marriage Details
-    marriage_date: { type: Date },
-    marriage_place: { type: String },
-    union_type: {
-        type: String,
-        enum: ['birth_family', 'marriage'],
-        default: 'marriage',
-        description: 'Type of union - birth_family for parents, marriage for couples'
+    marriageDate: {
+        type: DataTypes.DATE,
+        field: 'marriage_date'
     },
-
-    // Children linked to this union
-    children_ids: [{
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Member',
-        description: 'Array of children born to this union'
-    }],
-
-    // Union Status
+    marriagePlace: {
+        type: DataTypes.STRING,
+        field: 'marriage_place'
+    },
+    unionType: {
+        type: DataTypes.ENUM('birth_family', 'marriage'),
+        defaultValue: 'marriage',
+        field: 'union_type'
+    },
+    childrenIds: {
+        type: DataTypes.JSONB,
+        defaultValue: [],
+        field: 'children_ids'
+    },
     status: {
-        type: String,
-        enum: ['Active', 'Divorced', 'Deceased', 'Separated'],
-        default: 'Active'
+        type: DataTypes.ENUM('Active', 'Divorced', 'Deceased', 'Separated'),
+        defaultValue: 'Active'
     },
-
-    // Verification System
-    verification: {
-        is_verified: { type: Boolean, default: false },
-        verified_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-        verified_at: { type: Date },
-        status: {
-            type: String,
-            enum: ['Pending', 'Approved', 'Rejected'],
-            default: 'Pending'
-        },
-        rejection_reason: { type: String }
+    verificationStatus: {
+        type: DataTypes.ENUM('Pending', 'Approved', 'Rejected'),
+        defaultValue: 'Pending',
+        field: 'verification_status'
     },
-
-    // Metadata
-    meta_data: {
-        created_at: { type: Date, default: Date.now },
-        updated_at: { type: Date, default: Date.now },
-        created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+    isVerified: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false,
+        field: 'is_verified'
+    },
+    verifiedBy: {
+        type: DataTypes.UUID,
+        field: 'verified_by'
+    },
+    verifiedAt: {
+        type: DataTypes.DATE,
+        field: 'verified_at'
+    },
+    rejectionReason: {
+        type: DataTypes.STRING,
+        field: 'rejection_reason'
+    },
+    createdBy: {
+        type: DataTypes.UUID,
+        field: 'created_by'
     }
 }, {
+    tableName: 'unions',
     timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
+    underscored: true,
+    indexes: [
+        { fields: ['husband_id'] },
+        { fields: ['wife_id'] },
+        { fields: ['verification_status'] },
+        { fields: ['union_type'] }
+    ]
 });
 
-// Virtual to get both spouses
-UnionSchema.virtual('spouses').get(function () {
-    return {
-        husband: this.husband_id,
-        wife: this.wife_id
-    };
-});
-
-// Indexes for performance
-UnionSchema.index({ husband_id: 1 });
-UnionSchema.index({ wife_id: 1 });
-UnionSchema.index({ 'verification.status': 1 });
-UnionSchema.index({ union_type: 1 });
-
-// Pre-save middleware to update timestamp
-UnionSchema.pre('save', function (next) {
-    this.meta_data.updated_at = Date.now();
-    next();
-});
-
-module.exports = mongoose.model('Union', UnionSchema);
+module.exports = Union;
